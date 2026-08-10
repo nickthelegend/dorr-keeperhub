@@ -19,7 +19,7 @@ export interface JobStepRecord {
 
 export interface Job {
   id: string;
-  kind: "mev-duel";
+  kind: "commit" | "execute" | "close" | "mev-duel";
   refId: string;
   status: "running" | "complete" | "error";
   steps: JobStepRecord[];

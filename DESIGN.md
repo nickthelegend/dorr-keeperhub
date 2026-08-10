@@ -1,218 +1,110 @@
-# dorr — Design & Build Spec (v1)
+# dorr — design notes
 
-> **dorr** is a privacy-preserving perpetual-futures DEX on **Cardano + Midnight**.
-> Its one reason to exist: **your order is invisible to the public mempool, so it cannot be front-run.**
-> Built by fusing UniPerp's trading frontend with the Anti-Front-Running-ZKPerps research backend.
+> The one reason this exists: **what you reveal before a trade lands is what it
+> costs you.** MEV Shield prices that in dollars. The perps build a venue where
+> you don't have to reveal it.
 
-**Status:** design locked, pre-build · **Target:** hackathon/grant demo · **Timeline:** ~2-week sprint · **Mode:** everything real, no mocks.
+This is the reasoning behind the build — the decisions that were load-bearing
+and the ones that turned out to be wrong. For what it *does*, see
+[docs/FEATURES.md](docs/FEATURES.md); for how it fits together,
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ---
 
 ## 1. Decisions ledger
 
-| Area | Decision |
-|------|----------|
-| Purpose | Hackathon/grant demo; north star = *provably hidden order flow* |
-| Architecture | Off-chain engine + on-chain privacy (Midnight) + L1 audit anchor (Cardano preprod) |
-| Market structure | Oracle-priced **vAMM** with price impact (single trader, no counterparty) |
-| Markets (5) | **ADA, BTC, ETH, SOL, DOGE** — all quoted vs **dUSD** |
-| Oracle | **Pyth Hermes**, off-chain (display + fills). No on-chain oracle in v1 |
-| Privacy | Private order commitments on Midnight; public sees only a 32-byte hash |
-| Trust (v1) | **Trusted operator** matches/executes & proves; public is blind. *Not* trustless settlement |
-| Collateral | Mock **dUSD** native token + in-app faucet; **real** deposits to a vault; off-chain accounting |
-| Positions | **CIP-68 NFT** per open position (optional polish; first to cut) |
-| Wallet + libs | **Lace** (Cardano + Midnight) · **Mesh** (CIP-30, frontend) · **Midnight.js** (ZK) · **Lucid** (operator tx) |
-| Demo | **A/B**: in-app "public mode" + scripted sandwich bot **vs** dorr invisible |
-| Live ZK stages | order → matching → settlement (3 real proofs) on local Midnight; liquidation/aggregate = evidence |
-| Demo network | **Local** Midnight network + proof server; **Cardano preprod** anchors (real explorer txs) |
-| Cardano access | **Blockfrost** (primary) + **Koios** (keyless fallback) |
-| Hosting (demo day) | All local on the laptop; only preprod is remote |
-| Max leverage | 20x (inherit UniPerp) |
-| Repo | New **`dorr/`** monorepo (bun/pnpm workspaces) |
+| Decision | Why |
+|---|---|
+| Two lanes differing in one boolean | Any other difference and the comparison proves nothing. Same pool, same wallet, same relayer, same tolerance. |
+| The searcher is a real adversary, not a script | A simulated attacker proves the simulation. This one has its own key, pays its own gas, and loses races. |
+| An observer that doesn't send either lane | "Never public" has to be checkable by something other than the sender, or it's just an assertion. |
+| Our own AMM and our own searcher | No independent searcher fleet hunts a bespoke testnet pool. Owning both is what makes the counterfactual clean — and is stated as a limitation, not hidden. |
+| mUSD as an 18dp dollar stand-in | A base→quote shortfall is then already in dollars, with no oracle in the trust path. The headline number doesn't depend on a price feed being right. |
+| One faucet token for both halves | A judge who can fund one experiment can fund the other. |
+| Chainlink read on chain, per market | A feed that can't be read disables its market. A perp priced off a guess is worse than one that refuses to quote. |
+| Off-chain matching | It's the only way sealed orders and hidden stops work at all. It is also the trust assumption, and it's named as one. |
+| **Settlement authority is KeeperHub's, not ours** | The single most important decision here. See below. |
+| Settled PnL read from vault events, not tracked locally | Idempotency from arithmetic rather than from remembering correctly. |
+| Duels in SQLite | The leaderboard should be a history, not a session. |
 
----
+## 2. The trust model, and the one decision that carries it
 
-## 2. Trust & privacy model (be honest about this)
+Off-chain matching means the operator alone knows what everyone is owed. The
+usual answer is "trust us, we're honest." The better answer is to make it
+structurally impossible to matter.
 
-**What is hidden, and from whom:**
+`DorrVault.applyPnl` is `onlySettlement`. `settlement` is **KeeperHub's wallet**,
+not ours. Every batch must sum to **zero**, checked on chain. So:
 
-| Actor | Can they see your order (side/size/leverage/price)? |
-|-------|------|
-| Public / mempool / MEV bots / other traders | **No** — only a 32-byte SHA-256 commitment + a ZK authority proof on Midnight |
-| The dorr operator (matcher/executor) | **Yes** — it receives the revealed preimage to execute against the vAMM |
-| Cardano L1 | Sees only settlement **digests** (anchored hashes), never order contents |
+- the operator can compute what you're owed → **and cannot credit it**
+- it cannot mint balance, because the batch must balance
+- it cannot pay itself, for the same reason
+- it cannot over-credit against reserves — `applyPnl` reverts on shortfall
 
-**The truthful claim:** *"On a public perp DEX your open-position tx sits in the mempool where searchers can front-run/sandwich it. On dorr the order is a hash on a privacy chain until it's executed — the public cannot see it or trade ahead of it."*
+None of that depends on the operator's code being correct. It's the contract.
 
-**What we do NOT claim in v1:** trustless settlement, trustless liquidation, or operator-blind matching. The operator is a trusted party (like a sequencer). That is the explicit v1 tradeoff, and the v2 path to remove it is in §9.
+What remains trusted is the matching itself: fill prices against the vAMM. A
+dishonest operator could mis-price a fill. Making that verifiable needs a proof
+system this doesn't have, and [SECURITY.md](docs/SECURITY.md) says so plainly.
 
----
+## 3. Things that were wrong, and what they cost
 
-## 3. System architecture
+**Settlement double-paid.** The first design decremented a local counter when a
+batch landed. Then a batch landed that the operator didn't observe, and the
+vault paid −1.0002 mUSD against −0.5001 owed. The fix was to stop remembering:
+what's been paid is read from `PnlApplied` events, what's owed is the
+difference. The next run proposed the correction; the one after proposed
+nothing. **Idempotency should come from the arithmetic, not from bookkeeping.**
 
-Five layers. Provenance tags: **[UniPerp]** = ported from `uniperp/web`, **[ZKPerps]** = reused from `Anti-Front-Running-ZKPerps-on-Cardano-w-MidnightZK`, **[NEW]** = built for dorr.
+**The vAMM seeded on a timer.** Pools were seeded on the first tick *after* the
+port opened, so for two seconds a commit would succeed and its execute would
+fail — stranding margin behind an order that could never fill. Seeding now
+happens before the server listens. **A readiness window is a bug, not a
+detail.**
 
-```mermaid
-flowchart TB
-  U[Trader + Lace wallet]
+**The private lane's flag was silently ignored.** `POST /api/execute/contract-call`
+accepts `usePrivateMempool`, returns 200, and publishes to the public mempool
+anyway — we measured the "private" transaction in our own observer 1.0s before
+inclusion. Private routing lives on workflow write-nodes only. **A flag that is
+accepted and ignored is worse than one that errors.**
 
-  subgraph FE [Frontend — Next.js  UniPerp]
-    UI[Trading UI, charts, portfolio]
-    PX[Pyth Hermes price pipeline]
-    Wc[Mesh CIP-30 + Midnight.js connectors  NEW]
-  end
+**The Attack Lab had a fake clock.** Its steps carried millisecond offsets (0,
+320, 640…) that were spacing for an animation and read as measurements. The
+economics were real — solved against the live vAMM curve — but a number that
+looks measured and isn't costs more than the animation was worth. Now it's
+ordered stages, labelled as a model, pointing at the measured version.
 
-  subgraph OP [Operator service — Node  NEW wrapper]
-    EX[vAMM executor  NEW - adapts matcher]
-    ENG[Engine: margin / funding / liquidation  ZKPerps]
-    CM[Order commitment  ZKPerps]
-    PR[Midnight prover driver  ZKPerps midnight-cli]
-    KP[Keeper: Pyth poll, funding, liq scan  NEW]
-    CX[Cardano tx builder — Lucid  ZKPerps]
-  end
+## 4. Trade lifecycle
 
-  subgraph MN [Midnight — local network + proof server]
-    C1[zkperps-order: commit + authority]
-    C2[zkperps-matching: execution attest]
-    C3[zkperps-settlement: state digest]
-  end
+1. **Commit** — margin locks, `SHA-256(fields ‖ nonce)` publishes, nothing else does.
+2. **Execute** — the operator reveals against its stored preimage, verifies the
+   commitment recomputes, and fills on the vAMM.
+3. **Close** — PnL realises against the account off chain.
+4. **Settle** — every five minutes the keeper batches unsettled PnL, checks it
+   sums to zero, and asks KeeperHub to apply it. The vault enforces the
+   invariant regardless.
 
-  subgraph CD [Cardano preprod]
-    DUSD[dUSD token + faucet  NEW]
-    VLT[Margin vault  NEW / Aiken]
-    ANC[Settlement anchor  ZKPerps Aiken]
-    NFT[CIP-68 position NFT  NEW]
-  end
+Sealed orders insert a step before (1): encrypted to a future drand round,
+unreadable by anyone including us, cleared at a uniform price when the round
+lands.
 
-  PYTH[Pyth Hermes  off-chain]
+## 5. Scope — real vs cut
 
-  U --> UI
-  UI --> Wc
-  PX --> UI
-  PYTH --> PX
-  PYTH --> KP
-  Wc -->|deposit dUSD tx| VLT
-  UI -->|order| OP
-  CM --> C1
-  EX --> ENG
-  PR --> C1 & C2 & C3
-  EX --> C2
-  ENG --> C3
-  CX --> ANC
-  CX --> NFT
-  CX --> VLT
-```
+**Real:** deployed contracts, live Chainlink prices, real signed transactions,
+a real adversary, a real mempool witness, persisted history, on-chain settlement.
 
----
+**Modelled and labelled:** the Attack Lab, the A/B foil, the batch and sealed
+demos. Solved from live market state, sent to no chain, and the UI says so.
 
-## 4. Trade lifecycle (the happy path)
+**Cut:** cross-margin, an order book, fraud proofs for the matching engine, and
+publishing the sealed-bid membership root on chain.
 
-1. **Connect** Lace (Cardano preprod + Midnight). **Faucet** mints test **dUSD**.
-2. **Deposit** dUSD → margin **vault** (real preprod tx, user-signed via Mesh/Lace).
-3. **Build order** in the UI (market, long/short, size, leverage ≤20x). Client derives a `nonce` and the **commitment** `H = sha256(order‖nonce)` (reuses `src/order/commitment.ts`).
-4. **Commit on Midnight** (`zkperps-order`): prove trader authority (ZK), ledger stores only `H`. **← public sees nothing but a hash. This is the anti-front-run moment.**
-5. **Reveal** the preimage to the operator over a private channel → operator verifies `sha256(preimage)==H` and attests execution (`zkperps-matching`).
-6. **Execute** against the **Pyth-priced vAMM** (mark = Pyth mid; fill = mark ± constant-product price impact on virtual reserves). Engine locks margin, records the position; optional **CIP-68 NFT** minted.
-7. **Manage:** keeper applies funding (`funding_rate`) and monitors liquidation (`liquidation_engine`) using off-chain Pyth marks.
-8. **Close/settle:** `zkperps-settlement` proves the margin/PnL **digest transition**; operator **anchors the digest** to Cardano preprod via the Aiken `settlement_anchor` (real explorer tx). dUSD PnL settled from the vault.
-
-## 5. A/B demo path (the money shot)
-
-- **Public mode:** same engine, **skip** the Midnight commitment → order is visible → scripted **bot sandwiches** it → trader gets a worse fill (show the slippage).
-- **dorr mode:** same order → only `H` appears on Midnight → bot is **blind** → no sandwich possible. Show both panels side by side.
-
----
-
-## 6. Component inventory — reuse / adapt / build
-
-**Reuse ~as-is**
-- **[ZKPerps]** 5 Compact contracts (`contract/src/*.compact`); use order/matching/settlement live.
-- **[ZKPerps]** off-chain engine: `settlement/margin_manager.ts`, `funding_rate.ts`, `liquidation_engine.ts`, `settlement_engine.ts`, `src/order/commitment.ts`, `common/types.ts`.
-- **[ZKPerps]** Cardano: `cardano/settlement-anchor/` (Aiken), `src/cardano/*`, `settlement/cardano_connector.ts` (Lucid; Blockfrost/emulator).
-- **[ZKPerps]** `midnight-local-cli` deploy/prove flow → becomes the operator's prover driver.
-- **[UniPerp]** entire Next.js UI (`components/trading`, `dashboard`, charts, providers), and the **Pyth Hermes** pipeline (`lib/events.ts`, `app/api/spot-data`, `hooks/api/use-market-data.ts`) — chain-agnostic, survives the port.
-
-**Adapt**
-- **[ZKPerps]** `matching/order_matcher.ts` (order-book) → **vAMM executor** (Pyth price + price impact; port the reserve/impact idea from UniPerp's PerpsHook). `zkperps-matching` repurposed as *execution attestation* (preimage↔commitment) rather than bid/ask crossing.
-- **[UniPerp]** `lib/contracts-frontend.ts` (EVM ABIs) → dorr operator **API client** + wallet calls. `lib/core.ts` (wagmi/Unichain) → **Mesh/Lace + Midnight.js** providers. `hooks/api/use-positions.ts`, `use-margin.ts` (viem/ethers) → operator API + user-signed Cardano txs. `wallet-selection-modal` → **Lace/CIP-30**.
-
-**Build new**
-- **dUSD** native token (mint policy) + **faucet** endpoint.
-- **Margin vault** on Cardano (deposit/withdraw dUSD; v1 may start from the anchor script tightened to operator custody).
-- **Operator service** (Node): HTTP API + engine + Midnight proving (proof server) + Lucid Cardano txs + keeper loops.
-- **CIP-68** position-NFT minting.
-- **A/B "public mode"** toggle + scripted **sandwich bot**.
-
-**Drop**
-- **[UniPerp]** Lighthouse zkTLS (`hooks/api/zktls.ts`, Lighthouse bits of `getAMMPrice.ts`), the v0 dashboard mock (`mock.json`). Supabase → optional (keep for price history or use in-memory).
-
----
-
-## 7. Repo layout (target monorepo)
-
-```
-dorr/
-  apps/
-    web/                     # ported UniPerp frontend (Next.js)
-  packages/
-    engine/                  # ZKPerps off-chain engine (margin, funding, liq, settlement, commitment, types)
-    contracts-compact/       # Midnight Compact contracts + managed artifacts + prover driver
-    contracts-aiken/         # dUSD policy, margin vault, settlement anchor, CIP-68 (Aiken/Plutus V3)
-  services/
-    operator/                # matcher/executor + prover + Cardano tx + keeper + HTTP API
-  DESIGN.md
-```
-
-Workspaces via bun (repo already uses `bun.lock`). Shared TS types exported from `packages/engine`.
-
-## 8. Runtime processes (all local for the demo)
-
-| Process | Where | Notes |
-|---------|-------|-------|
-| Next.js web | localhost:3000 | ported UI |
-| Operator service | localhost:8787 | engine + prover + Cardano + keeper |
-| Midnight proof server | Docker :6300 | `midnightntwrk/proof-server` |
-| Local Midnight network | Docker | undeployed net for real proofs |
-| Cardano preprod | remote | Blockfrost primary, Koios fallback |
-| Lace | browser ext | preprod + Midnight |
-
----
-
-## 9. Explicit v1 scope — real vs cut
-
-**Real:** dUSD token + real deposits, Midnight proofs (order/matching/settlement) on local net, Cardano preprod anchor txs, Pyth prices, vAMM fills, position NFTs, off-chain engine, Lace wallet, A/B bot.
-
-**Cut / deferred (v2):** trustless on-chain settlement & liquidation → needs **Pyth Lazer on Cardano** (live on mainnet, Aiken SDK, pull model) + an Aiken settlement/liquidation validator; operator-blind matching; live liquidation/aggregate proofs (shown as test evidence in v1); real stablecoins; mainnet; in-browser Midnight proving for user-held privacy (v1 lets the operator prove — it already sees the order, so no extra trust is lost).
-
----
-
-## 10. Two-week plan
-
-**Week 1 — plumbing & the trade loop (no ZK yet)**
-1. Scaffold `dorr/` monorepo; import engine + contracts from ZKPerps; import `web` from UniPerp.
-2. Cardano preprod: mint **dUSD** policy + **faucet**; stand up **margin vault**; wire Blockfrost/Koios.
-3. Rip EVM out of `web` (wagmi/viem/ethers) → **Lace + Mesh** connect + deposit/withdraw.
-4. **Operator service**: wrap the engine; build the **vAMM executor** (Pyth mark + impact); HTTP API.
-5. Wire the ported UI to the operator API; **Pyth Hermes** charts + 5 markets; open/close a position end-to-end **without** privacy yet.
-
-**Week 2 — privacy, settlement, demo**
-6. Adapt `midnight-local-cli` into the operator; run **order → matching → settlement** proofs on the local Midnight net + proof server, wired into the trade flow.
-7. **Anchor** settlement digests to Cardano preprod; verify explorer links.
-8. **CIP-68** position NFTs (optional).
-9. **A/B**: public-mode toggle + scripted **sandwich bot**; build the side-by-side view.
-10. **Harden & rehearse**: pre-warm proof server, fund/keep-warm preprod + local Midnight, script the demo, dry-run repeatedly.
-
-## 11. Top risks & mitigations
+## 6. Known risks
 
 | Risk | Mitigation |
-|------|-----------|
-| Live Midnight proof latency/flakiness on stage | Local net + pre-warmed proof server; rehearse; keep proofs to 3 stages |
-| "Everything real, no fallback" bricks mid-demo | Harden each process; run the full pipeline warm before going on; all-local (only preprod remote) |
-| vAMM executor is new code | Port impact math from UniPerp PerpsHook; small, well-tested module |
-| dUSD/vault custody bugs move real (test) funds | Preprod only; simple vault; operator-signed; cover with the emulator tests first |
-| Scope creep | NFTs and liquidation/aggregate proofs are pre-agreed cut lines |
-
-## 12. Open items for build time
-- Vault: operator-address custody vs a minimal Aiken validator (decide when building step 2).
-- Price history: Supabase vs in-memory (decide when porting the chart pipeline).
-- Exact Pyth Hermes feed ids for ADA/BTC/ETH/SOL/DOGE (pull at build).
+|---|---|
+| Searcher runs out of gas → public lane falsely reports $0 | `/mev/status` reports its balance; the UI warns when it can't attack |
+| Observer disconnects → privacy claim unwitnessed | Those runs report *unobserved*, never *private* |
+| KeeperHub nonce contention between the two subsystems | Settlement backs off and retries; the real fix is a second wallet |
+| Insurance fund undercapitalised for a batch | Checked before sending; reported as a refusal with the numbers, not a revert |
+| Chainlink feed stale or unreadable | The market disables itself rather than quoting |

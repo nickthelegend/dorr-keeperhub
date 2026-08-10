@@ -52,7 +52,26 @@ export interface DuelParams {
   slippageBps?: number;
   /** Skip the attack and only measure mempool exposure. */
   observeOnly?: boolean;
+  /**
+   * Called as each stage begins and ends.
+   *
+   * A duel is two on-chain lanes across several blocks, and private routing
+   * does not broadcast — it offers the transaction to builders and waits for
+   * inclusion, measured here between 12s and 233s. That is minutes of wall
+   * clock behind a single button. Without stage reporting the UI can only show
+   * one indeterminate spinner for the whole thing, which is indistinguishable
+   * from a hang and is where people give up.
+   */
+  onStage?: (stage: DuelStage, detail?: string) => void;
 }
+
+export type DuelStage =
+  | "preparing"
+  | "public-submitting"
+  | "public-landed"
+  | "private-submitting"
+  | "private-landed"
+  | "measuring";
 
 const DECIMALS = 18;
 
@@ -309,6 +328,9 @@ export async function runDuel(p: DuelParams = {}): Promise<RunDuelResult> {
   const pc = client();
   const notes: string[] = [];
 
+  const stage = p.onStage ?? (() => {});
+  stage("preparing");
+
   const wallet = await kh.orgWallet();
   const tokenIn = (await pc.readContract({
     address: pool,
@@ -338,6 +360,7 @@ export async function runDuel(p: DuelParams = {}): Promise<RunDuelResult> {
   let privateLane: LaneResult | undefined;
   try {
     announce("public lane submitting — watch for its hash in the feed");
+    stage("public-submitting");
     publicLane = await runLane({
       lane: "public",
       amountIn,
@@ -349,8 +372,16 @@ export async function runDuel(p: DuelParams = {}): Promise<RunDuelResult> {
     if (!env.mev.searcherKey) {
       notes.push("no searcher key configured — measured mempool exposure only, no live sandwich");
     }
+    stage(
+      "public-landed",
+      publicLane.error
+        ? `failed: ${publicLane.error.slice(0, 80)}`
+        : `block ${publicLane.blockNumber ?? "?"} · $${(publicLane.shortfallUsd ?? 0).toFixed(2)} lost` +
+          (publicLane.sandwich?.landed ? " · sandwiched" : ""),
+    );
 
     announce("private lane submitting — this one should never appear in the feed");
+    stage("private-submitting");
     privateLane = await runLane({
       lane: "private",
       amountIn,
@@ -359,10 +390,17 @@ export async function runDuel(p: DuelParams = {}): Promise<RunDuelResult> {
       searcher,
       attack: false,
     });
+    stage(
+      "private-landed",
+      privateLane.error
+        ? `failed: ${privateLane.error.slice(0, 80)}`
+        : `block ${privateLane.blockNumber ?? "?"} · $${(privateLane.shortfallUsd ?? 0).toFixed(2)} lost`,
+    );
   } finally {
     // The observer is shared and long-lived; only the attack arming is per-duel.
     searcher.disarm();
   }
+  stage("measuring");
 
   // A lane that errored has no shortfall to compare — treating its missing
   // result as "$0 lost" would credit the private lane with a saving it never

@@ -1,121 +1,164 @@
 # dorr — runbook
 
-Privacy-preserving perps on Cardano + Midnight. Everything runs locally except the Cardano preprod legs.
+Perps and MEV Shield, both on Ethereum Sepolia through KeeperHub. Everything
+runs locally except the chain and KeeperHub itself.
 
-## What's built (and verified working)
-
-| Layer | Status |
-|-------|--------|
-| Monorepo (`apps/web`, `packages/engine`, `packages/contracts-aiken`, `services/operator`, vendored Midnight CLI) | ✅ |
-| Off-chain engine (matching, margin, funding, liquidation, commitment) from ZKPerps | ✅ imported, tests pass |
-| Operator service — 5 markets, Pyth Hermes prices, vAMM executor, accounting, keepers | ✅ boots, live prices |
-| Aiken contracts — dUSD sig-policy, margin vault (operator-param), settlement anchor | ✅ `aiken build` green (v1.1.21) |
-| Midnight ZK pipeline — order→matching→settlement, real proofs on local net | ✅ **all 3 proofs verified (~40s each)** |
-| A/B sandwich demo (deterministic) | ✅ victim pays ~150 bps more when public |
-| Web app (ported UniPerp, Mesh/Lace, operator API) | ✅ **`bun run build` green; renders offline + wallet-less** |
-| CIP-68 position NFTs | ✅ emulator-verified (222 to trader, 100+metadata to operator) |
-| Cardano tx layer (mint / deposit / scan / withdraw / anchor) | ✅ **emulator-verified end-to-end (5 steps)** |
-| Tests | ✅ engine 5, vAMM 7, cardano-emulator + cip68 → all green |
-| **Cardano preprod (live)** — faucet dUSD, vault deposit/withdraw, anchor | ⛔ **blocked ONLY on funding the deployer** (logic already emulator-proven) |
-
-## Security — wallet-signature auth
-
-Every value-moving action (commit / execute / close / withdraw) is bound to a
-CIP-30 wallet signature: the connected wallet signs a fresh, timestamped,
-key-sorted message; the operator verifies it (cardano-verify-datasignature),
-checks freshness (anti-replay window), rejects reused signatures, and confirms
-the signer matches the acting address. **You cannot place or close someone
-else's trade.** Enable enforcement with `DORR_AUTH=1` (the web signs
-automatically when a wallet is connected). Proven by `test/auth-crypto.test.ts`
-— a real CIP-8 signature is accepted, tampered params and cross-wallet forgery
-are rejected.
-
-## Tests (70, all green)
-
-```bash
-bun test services/operator/test/     # 65: math, auth, auth-crypto, privacy, vAMM, cardano-emulator, cip68, integration, features, features-v2 (batch/oracle-guard/cancel/stats)
-bun run --cwd packages/engine test   # 5: commitment + settlement anchor
-bun run --cwd services/operator src/scripts/live-e2e.ts   # assertive ON-CHAIN E2E (real preprod txs, confirms each on Koios)
-```
-- **Privacy/MEV** (`privacy.test.ts`): commitment is hiding + binding; brute-forcing the 128-bit nonce is infeasible; a private order's public view leaks nothing exploitable.
-- **Batch/guard/cancel/stats** (`features-v2.test.ts`): uniform-price batch clearing makes a sandwich net $0 (structural); the oracle-divergence guard refuses a fill when mark ≠ oracle; cancel releases margin; stats surface OI/skew/funding.
-- **Integration** (`integration.test.ts`): full commit→execute→close in-process with privacy + accounting assertions, and the live-A/B pool-restore invariant.
-- **On-chain E2E** (`live-e2e.ts`): real user wallet → deposit → **proof-of-solvency** (reads the on-chain vault) → **cancel round-trip** → **batch auction** ($0 vs sequential) → private commit → match + CIP-68 NFT → settle + L1 anchor → operator-routed vault withdraw, asserting every preprod tx confirms on Koios. ZK proof legs run on the local Midnight net (or the env-gated `DORR_ZK_MODE=stub` when the local net is unavailable); the Cardano legs are always real preprod.
-
-## Deployer wallet — FUND THIS (preprod tADA)
-
-```
-addr_test1qqlkgzx5fldu0c476qkr3svajr89jxaw6mk268cqdy5tna49zmp9qvht53kgd8vcmgyqhlzxjadcx9zj5vfx4lve8ygq9whvac
-```
-Faucet: https://docs.cardano.org/cardano-testnets/tools/faucet (select **Preprod**, request 2–3×).
-Also add a free **Preprod** Blockfrost key to `dorr/.env` → `BLOCKFROST_PROJECT_ID=` (else it falls back to keyless Koios, which is slower/rate-limited for tx building).
-
-## First run
-
-```bash
-cd dorr
-bun install                              # workspaces
-./tools/scripts/dev.sh up                # docker: Midnight localnet (proof 6301 / indexer 8088 / node 9945)
-./tools/scripts/dev.sh fund-midnight     # once per fresh localnet — funds operator's Midnight wallet + DUST
-./tools/scripts/dev.sh operator          # terminal A → :8790
-./tools/scripts/dev.sh web               # terminal B → :3000
-```
-
-Once the deployer has tADA:
-
-```bash
-./tools/scripts/dev.sh preprod           # mints dUSD treasury, seeds vault, posts a genesis anchor
-```
-
-## The demo (A/B — the hero moment)
-
-1. Connect **Lace** (preprod + Midnight). Faucet 10k dUSD. Deposit to vault (real preprod tx).
-2. Open a trade with the **privacy toggle = public**: order details hit `/feed` → the sandwich bot front-runs → worse fill.
-3. Same trade with **privacy = dorr private**: `/feed` shows only the commitment hash → bot blind → fair fill.
-4. Point at the side-by-side: `POST /demo/ab` quantifies the difference (≈150 bps saved).
-5. Close a position → watch the live proof steps: **settlement proof → Cardano anchor (explorer link) → Midnight bind**.
+---
 
 ## Ports
 
-| Service | Port |
-|---------|------|
-| web | 3000 |
-| operator API | 8790 |
-| Midnight proof server | 6301 |
-| Midnight indexer (GraphQL v3) | 8088 |
-| Midnight node RPC | 9945 |
+| What | Where |
+|---|---|
+| Operator (Hono, Bun) | `:8790` — override with `OPERATOR_PORT` |
+| Web app (Next.js) | `:3000` — override with `--port` |
 
-(ghost's pre-existing localnet on 6300/8087/9944 is left untouched; dorr uses its own on 6301/8088/9945.)
+The operator refuses to start if something is already serving its port. Bun sets
+`SO_REUSEPORT`, so a second instance would otherwise bind successfully and both
+would answer requests round-robin from different in-memory observers — which
+produces bizarre symptoms rather than an obvious error.
 
-## Verified evidence — full live E2E (real user wallet, preprod + local Midnight)
+---
 
-Reproduce: `bun run --cwd services/operator src/scripts/live-e2e.ts` (operator up). One clean run:
+## Start
 
-**Cardano preprod deploy (deployer funded 10k tADA):** dUSD policy `f0c16d56…` · mint `0debcefa…` · vault `addr_test1wqjah23…` · seed `b16a9585…` · genesis anchor `a3590a6c…`
+```bash
+bun install
+```
 
-**The run** (user `addr_test1qrlqtxp…`):
-| step | what | tx |
-|------|------|-----|
-| 1 | operator → user gas | `490e9b9f…` (preprod) |
-| 2 | faucet 5,000 dUSD (mint) | `a9535d0e…` (preprod) |
-| 3 | **user-signed vault deposit** 3,000 dUSD | `856ef149…` (preprod) |
-| 5 | commit + `proveTraderOrderAuthority` | `78baabe2…` (Midnight ZK) |
-| 6 | `proveAndFinalizeMatch` | `0123d381…` (Midnight ZK) |
-| 6 | **CIP-68 position NFT mint** | `58262448…` (preprod) |
-| 7 | `proveSettlementTransition` | `048684da…` (Midnight ZK) |
-| 7 | **L1 settlement anchor** (inline AnchorDatum) | `4b68a747…` (preprod) |
-| 7 | `bindL1SettlementAnchor` | `69037ef7…` (Midnight ZK) |
-| 8 | **operator-signed vault withdraw** (Aiken script spend) | `407fc6e4…` (preprod) |
+```bash
+bun run --cwd services/operator start
+```
 
-That's 4 real ZK proofs + 6 real preprod txs — deposit, mint, NFT, anchor, withdraw all on-chain, order contents never exposed (public saw only commitment `8ed0bee0…`). Any hash → `https://preprod.cardanoscan.io/transaction/<hash>`.
+```bash
+bun run --cwd apps/web dev
+```
 
-Proof timing ~40s each on this machine; preprod confirmations ~20–90s via keyless Koios (add a Blockfrost preprod key to `.env` for snappier tx building).
+A healthy boot prints, in order: persisted duel count, the Chainlink feed for
+every market with its current price, the seeded vAMM pools, and the listening
+line. If a feed can't be read, that market is **disabled** rather than quoted
+from a stale number — you'll see it say so.
 
-## Key files
+---
 
-- `services/operator/src/vamm.ts` — the vAMM (Pyth mark + constant-product impact)
-- `services/operator/src/trading.ts` — commit→execute→close lifecycle + keepers
-- `services/operator/src/cardano.ts` — dUSD/vault/anchor tx building (Lucid)
-- `services/operator/src/demo.ts` — the deterministic A/B sandwich
-- `vendor/zkperps/midnight-local-cli/src/dorr-*.ts` — per-trade ZK proof drivers
-- `packages/contracts-aiken/dorr-vault/validators/margin_vault.ak` — vault validator
+## First-time setup
+
+You need a KeeperHub org key, a Sepolia-funded deployer, and about 0.05 SepoliaETH.
+
+```bash
+cp .env.example .env
+```
+
+Fill in `ETH_DEPLOYER_KEY`, `KEEPERHUB_API_KEY`, `KEEPERHUB_ORG_WALLET`, and
+`KEEPERHUB_INTEGRATION_ID` (from `GET /api/integrations` — the wallet that signs
+write nodes; without it every write fails as "exceeded max retries", which
+points nowhere near the actual cause).
+
+Deploy the MEV lab — pool, both faucet tokens, and the searcher's funding:
+
+```bash
+cd services/operator && bun run src/scripts/mev-deploy.ts
+```
+
+Wire perps settlement. This capitalises the insurance fund by having KeeperHub
+sign its own deposit, then hands it the vault's settlement authority:
+
+```bash
+cd services/operator && bun run src/scripts/provision-settlement.ts 50000
+```
+
+Write the addresses each script prints back into `.env`.
+
+---
+
+## Verify it's actually working
+
+```bash
+cd services/operator && bun run src/scripts/prove-deposit.ts 500
+```
+
+Mints mUSD, deposits it into the vault, then asserts the operator's reported
+balance moved to match the vault's. **It fails loudly if the two halves come
+apart** — which is the point of running it.
+
+```bash
+curl -s localhost:8790/ops/solvency | jq
+```
+
+Reserves, liabilities and solvency read live from `DorrVault`. The operator does
+not get a say.
+
+---
+
+## Routine operations
+
+**Run a duel from the CLI** instead of the UI:
+
+```bash
+curl -sX POST localhost:8790/mev/duel -H 'content-type: application/json' -d '{"amountIn":"10","slippageBps":100}'
+```
+
+**Rebalance the pool.** Every duel leaves it slightly off its target price —
+the searcher's two legs don't cancel against the 30bp fee:
+
+```bash
+cd services/operator && bun run src/scripts/mev-rebalance.ts
+```
+
+**Stand up the autonomous agent** (cron is UTC):
+
+```bash
+cd services/operator && bun run src/scripts/mev-schedule.ts "0 * * * *" 2 100
+```
+
+**Settle perps PnL now** rather than waiting for the five-minute keeper:
+
+```bash
+curl -sX POST localhost:8790/settlement/run | jq
+```
+
+---
+
+## When something breaks
+
+**A KeeperHub write fails with "exceeded max retries."** That string covers at
+least three unrelated causes. Check in this order: the node is missing
+`integrationId`; the ABI isn't in Foundry's shape (`internalType` included — the
+terser viem-style entry is rejected); or poll the execution status directly,
+because the real error often only appears there.
+
+**"Wallet is saturated: could not acquire the nonce lock."** KeeperHub sends one
+transaction at a time per wallet, and private routing holds that lock for the
+whole inclusion wait — 12s to 233s measured here. Settlement backs off and
+retries on its own. The structural fix is a second wallet.
+
+**A market is disabled.** Its Chainlink feed couldn't be read or its last update
+is older than the staleness bound. `GET /markets` reports `disabled: true`. This
+is deliberate: a perp priced off a guess is worse than one that refuses to quote.
+
+**The public lane reports $0 and no sandwich.** Either the searcher lost the race
+for block position — legitimate, and recorded as-is — or it's out of gas. Check
+`GET /mev/status` for `searcherFunded`; the UI warns when it can no longer attack.
+
+**The mempool feed is stuck at zero.** The WebSocket didn't connect, so nothing
+is witnessing the privacy claim. Check `ETH_WS_URL`; runs mined while the
+observer was down are reported as *unobserved*, never as private.
+
+**Settlement says "insurance fund holds X but owes Y."** The fund is
+undercapitalised for the batch. Re-run `provision-settlement.ts` with a larger
+amount.
+
+---
+
+## Reset
+
+```bash
+curl -sX POST localhost:8790/demo/reset
+```
+
+Clears orders, positions, jobs and the feed. It does **not** clear collateral or
+settled PnL, and cannot: those live in the vault on Sepolia. Wiping the
+operator's database and watching balances survive is a reasonable thing to
+demonstrate on purpose.
+
+Duel history lives in SQLite at `services/operator/data/mev.db` and survives
+restarts independently.

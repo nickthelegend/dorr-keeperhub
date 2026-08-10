@@ -1,60 +1,97 @@
-# 🧪 Testing
+# Testing
 
-**47 automated tests, all green** — plus an assertive **on-chain E2E** that runs real ZK proofs and real preprod transactions and confirms each on-chain.
-
-```bash
-bun test --cwd services/operator     # 42 tests, 8 files
-bun test --cwd packages/engine       #  5 tests
-# on-chain (needs localnet up + funded deployer — see RUNBOOK):
-bun run --cwd services/operator src/scripts/live-e2e.ts
-```
-
-## The suite
-
-| File | Tests | What it pins |
-|------|-------|--------------|
-| `operator/test/trading-math.test.ts` | 10 | sizing, PnL sign (long/short), taker fee, funding rate/payment sign + cap, equity ratio, liquidation threshold, settled delta |
-| `operator/test/auth.test.ts` | 9 | envelope logic: accept valid, reject missing/malformed/stale/wrong-signer/invalid-sig, **replay dedupe**, deterministic message |
-| `operator/test/auth-crypto.test.ts` | 3 | **real CIP-8 round-trip**: genuine signature accepted by the production verifier; tamper + cross-wallet forgery rejected |
-| `operator/test/privacy.test.ts` | 7 | commitment hiding + binding + brute-force-infeasible; private view leaks nothing; public foil leaks (as intended) |
-| `operator/test/vamm.test.ts` | 7 | constant-product invariant, impact direction, size cap, recenter re-peg + no-op-in-tolerance |
-| `operator/test/cardano-emulator.test.ts` | 1 | full Cardano tx layer on Lucid emulator: mint → deposit → scan → withdraw → anchor |
-| `operator/test/cip68.test.ts` | 1 | CIP-68 mint: (222) to trader, (100) + metadata to operator, datum decodes |
-| `operator/test/integration.test.ts` | 5 | **full lifecycle** via `app.request` (commit→execute→close) + privacy + accounting asserts; insufficient-margin reject; A/B quantified; **live-A/B pool-restore invariant** |
-| `engine/*.test.ts` | 5 | order commitment stability + settlement-anchor CBOR |
-
-Fast tests use env-gated test doubles for the two slow/external legs — `DORR_ZK_MODE=stub` (skip the 40s prover) and `DORR_TEST=1` (skip preprod for the anchor). These are **test-only, never on in production**, and the real paths are covered by the on-chain E2E below.
-
-## On-chain E2E
-
-`services/operator/src/scripts/live-e2e.ts` is a real, assertive end-to-end run with a fresh user wallet:
-
-```
-[1] operator → user gas (tADA)          [5] private commit  → ZK authority proof
-[2] faucet 5,000 dUSD (mint)            [6] execute → vAMM fill + ZK match + CIP-68 NFT
-[3] USER-signed vault deposit           [7] close → ZK settle + L1 anchor + ZK bind
-[4] /deposits/sync                      [8] operator-signed vault withdraw
-[verify] every preprod tx must confirm on Koios → PASS/FAIL, exit code
-```
-
-It asserts: the commitment is a 32-byte hash, **the public feed exposes only that hash**, each ZK job completes, the position opens, the NFT mints, the settlement anchors, and **every Cardano tx confirms on-chain**.
-
-**Last run: `✓ ON-CHAIN E2E PASSED — 11 txs, all assertions green`** — confirmations gas 19 · faucet 17 · deposit 15 · NFT 7 · anchor 3 · withdraw 1. (Real tx hashes for a prior run are in the [RUNBOOK](../RUNBOOK.md#verified-evidence).)
-
-## Contract build check
+**67 automated tests, all green** — 19 Foundry, 48 Bun — plus scripts that
+verify the live system against Sepolia rather than against a mock.
 
 ```bash
-cd packages/contracts-aiken/dorr-vault && aiken build     # margin vault (Plutus V3)
-cd packages/contracts-aiken/settlement-anchor && aiken build
+cd contracts && forge test -vv
 ```
-
-## Web build
 
 ```bash
-bun run --cwd apps/web build     # exits 0 (static prerender of / and /_not-found)
+bun test --cwd services/operator
 ```
-> ⚠️ Don't run the build while `dev` is live — it corrupts `.next`. Stop dev, `rm -rf apps/web/.next`, then build.
 
-## What isn't automated
-- The **browser** wallet round-trip (Mesh `signData` → operator) — no headless wallet exists; the crypto convention it relies on is proven by `auth-crypto.test.ts`, and the flow is manual-tested with Lace/Eternl on Preprod.
-- Load/concurrency and adversarial fuzzing — out of scope for a hackathon build.
+```bash
+bun run --cwd services/operator typecheck && bun run --cwd apps/web typecheck
+```
+
+---
+
+## Contracts (19)
+
+`MevPool.t.sol` pins the sandwich economics independently of any network: a
+sandwich extracts value from the victim, works on buys as well as sells, a wider
+tolerance means strictly more extraction, and the attacker's take plus the LPs'
+fees equals the victim's loss — value moved, not created.
+
+It also pins `maxExtractableFrontRun`, the view function that solves for the
+largest front-run still leaving the victim one wei above their own limit. That
+function is what makes "your slippage tolerance is the attacker's budget" a
+claim about the contract rather than a slogan.
+
+`DorrVault.t.sol` covers deposit and withdrawal, that only the depositor can
+withdraw, margin locking, and the `applyPnl` invariants: zero-sum enforcement, a
+trader's balance never going negative, and reverting on a backing shortfall.
+
+## Operator (48)
+
+**`settlement.test.ts`** is regression coverage for a bug that actually
+happened. `buildBatch` is tested for the case where the chain has already paid
+(the batch must be empty), where it has *over*paid (the batch must propose the
+correction back), and for dust suppression. `toZeroSumUnits` is tested to sum to
+exactly zero — including on values floats cannot represent, like `0.1 + 0.2 −
+0.3`, where the residue has to land on the insurance fund rather than on the sum.
+
+**`mev-searcher.test.ts`** pins `decodeSwapFromCalldata` against real relayed
+transaction bytes. KeeperHub wraps calls in a relayer, so a searcher matching on
+`tx.to == pool` sees nothing and every relayed trade would *look* private. This
+test is what stops that becoming a silent false negative in our own favour.
+
+**`mev-store.test.ts`** covers the savings rule — a duel only counts when both
+lanes completed — and persistence across restarts.
+
+**`auth.test.ts` / `auth-crypto.test.ts`** cover EIP-191 recovery, replay
+rejection, and that a signature for one action can't be reused for another.
+
+---
+
+## Verifying against the live chain
+
+Unit tests can't tell you the two halves of the system are actually joined. These
+do, and they fail loudly when they aren't:
+
+```bash
+cd services/operator && bun run src/scripts/prove-deposit.ts 500
+```
+
+Mints mUSD, deposits it into the vault, then asserts the operator's reported
+balance moved to match the vault's — and that the operator's number equals the
+vault's `totalInternal`. If the operator ever credits its own number instead of
+reading the chain's, this fails.
+
+```bash
+cd services/operator && bun run src/scripts/probe-keeperhub.ts
+```
+
+Varies one knob at a time against a known-good contract call. KeeperHub reports
+several unrelated failures with the identical string "exceeded max retries", so
+this is the only practical way to find which one you have.
+
+---
+
+## Manual checks worth doing before a demo
+
+- `GET /mev/status` → `searcherFunded: true`. A broke searcher can't attack, so
+  the public lane reports $0 and the private lane wins by default — the most
+  flattering way this lab can be wrong.
+- The mempool counter on `/mev` is climbing. If it's stuck, nothing is
+  witnessing the privacy claim, and runs are correctly reported as *unobserved*
+  rather than private.
+- `GET /ops/solvency` → `solvent: true`.
+- Hostile input into the duel form: negative size, a non-numeric tolerance. Both
+  fields should flag and the button should disable.
+
+## Out of scope
+
+Load and concurrency testing, adversarial fuzzing of the matching engine, and
+formal verification. This is a hackathon build and those are not done.

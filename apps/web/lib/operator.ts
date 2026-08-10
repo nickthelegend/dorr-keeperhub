@@ -1,16 +1,144 @@
 /**
- * MEV Shield operator client.
- *
- * Every helper throws OperatorError on a non-2xx; callers (TanStack Query) fail
- * soft so the page renders an honest empty state rather than a blank screen when
- * the operator is down.
+ * dorr operator API client — typed fetch helpers for every REST endpoint.
+ * All helpers throw OperatorError on non-2xx; callers (TanStack Query)
+ * fail soft so the UI never crashes when the operator is down.
  */
 
 const OPERATOR = process.env.NEXT_PUBLIC_OPERATOR_URL || "http://localhost:8790";
 
 export const OPERATOR_URL = OPERATOR;
 
-// ─── job tracking (a duel spans several blocks) ──────────────────────────────
+// ─── types ────────────────────────────────────────────────────────────────────
+
+export type Side = "LONG" | "SHORT";
+export type PrivacyMode = "private" | "public";
+export type OrderType = "market" | "limit";
+
+export interface Health {
+  ok: boolean;
+  service: string;
+  markets: number;
+  now?: string;
+}
+
+export interface Market {
+  id: string;
+  symbol: string;
+  base: string;
+  maxLeverage: number;
+  disabled: boolean;
+  indexPrice: number | null;
+  markPrice: number | null;
+  publishTime: number | null;
+  vamm: { virtualBase: number; virtualQuote: number } | null;
+}
+
+export interface Account {
+  address: string;
+  balance: number;
+  /** Vault collateral, read from Sepolia. The operator cannot inflate this. */
+  deposited: number;
+  /** Cumulative realized PnL, fees and funding — the engine's record. */
+  pnl: number;
+  /** Of that, how much the vault has already paid. Read from its events. */
+  settledPnl: number;
+  /** The remainder, still only the operator's word. */
+  unsettledPnl: number;
+  locked: number;
+  free: number;
+  openPositions: number;
+  /** True when the vault could not be read and `deposited` is a last-known value. */
+  collateralStale?: boolean;
+}
+
+export interface FaucetResult {
+  success: boolean;
+  txHash: string;
+  amount: number;
+  jobId?: string;
+}
+
+export interface WithdrawResult {
+  success: boolean;
+  txHash: string;
+  jobId?: string;
+  balance?: number;
+}
+
+export interface CommitResult {
+  success: boolean;
+  orderId: string;
+  jobId: string;
+  commitmentHash: string;
+  sizeBase: number;
+  commitPrice: number;
+}
+
+export interface Order {
+  id: string;
+  address: string;
+  marketId: string;
+  side: Side;
+  sizeBase: number;
+  leverage: number;
+  marginUsd: number;
+  commitPrice: number;
+  privacyMode: PrivacyMode;
+  nonce: string;
+  commitmentHash: string;
+  status: "committed" | "executed" | "cancelled" | "failed";
+  createdAt: string;
+  orderType?: OrderType;
+  limitPrice?: number;
+  maxSlippageBps?: number;
+  executedFill?: { avgPrice: number; priceImpactBps: number; notional: number };
+}
+
+export interface Position {
+  id: string;
+  orderId: string;
+  address: string;
+  marketId: string;
+  side: Side;
+  sizeBase: number;
+  entryPrice: number;
+  marginUsd: number;
+  leverage: number;
+  openedAt: string;
+  fundingPaid: number;
+  status: "open" | "closed" | "liquidated";
+  closedAt?: string;
+  exitPrice?: number;
+  realizedPnl?: number;
+  markPrice?: number;
+  unrealizedPnl?: number;
+  orderType?: OrderType;
+  /** engine-computed liquidation price (open positions only). */
+  liquidationPrice?: number;
+  /** hidden stop-loss trigger price (never published — anti stop-hunting). */
+  stopLossPrice?: number;
+  /** hidden take-profit trigger price. */
+  takeProfitPrice?: number;
+}
+
+/** A private (hidden) resting limit order — visible only to its owner. */
+export interface RestingOrder {
+  id: string;
+  marketId: string;
+  side: Side;
+  sizeBase: number;
+  leverage: number;
+  marginUsd: number;
+  limitPrice: number;
+  commitmentHash: string;
+  createdAt: string;
+}
+
+export interface ExecuteResult {
+  success: boolean;
+  position: Position;
+  jobId: string;
+}
 
 export interface JobStep {
   label: string;
@@ -22,7 +150,7 @@ export interface JobStep {
 
 export interface Job {
   id: string;
-  kind: "mev-duel";
+  kind: "commit" | "execute" | "close" | "faucet" | "withdraw" | "mev-duel";
   refId: string;
   status: "running" | "complete" | "error";
   steps: JobStep[];
@@ -31,9 +159,537 @@ export interface Job {
   completedAt?: string;
 }
 
-// ─── MEV Shield ──────────────────────────────────────────────────────────────
-// `seenInMempool` is an independent observer's record, not a claim echoed back
-// by an API — it is what makes the dollar figures an attribution.
+export interface FeedEntry {
+  at: string;
+  marketId: string;
+  privacyMode: PrivacyMode;
+  commitmentHash: string;
+  leaked?: { side: Side; sizeBase: number; leverage: number; address: string };
+}
+
+export interface Settlement {
+  txHash: string;
+  blockNumber: number;
+  trader: string;
+  /** Signed, in mUSD. Credit to the trader is positive. */
+  delta: number;
+  newBalance: number;
+  explorerUrl: string;
+}
+
+/** POST /demo/ab — the front-running A/B showcase (public DEX vs dorr private). */
+export interface AbDemo {
+  marketId: string;
+  symbol: string;
+  indexPrice: number;
+  victim: { side: Side; marginUsd: number; leverage: number; sizeBase: number };
+  bot: { sizeBase: number; marginUsd: number };
+  public: {
+    botFrontRunPrice: number;
+    victimEntry: number;
+    botExitPrice: number;
+    botProfitUsd: number;
+    victimSlippageBps: number;
+    victimExtraCostUsd: number;
+    orderVisibleToBot: boolean;
+  };
+  private: {
+    victimEntry: number;
+    victimSlippageBps: number;
+    orderVisibleToBot: boolean;
+    publicSees: string;
+  };
+  headline: string;
+}
+
+/** POST /demo/attack — the MEV attack lab: same sandwich, public DEX vs dorr. */
+export type AttackActor = "bot" | "victim" | "chain" | "dorr";
+export interface AttackStep {
+  /** Position in the sequence, 1-based. Order, not elapsed time. */
+  step: number;
+  actor: AttackActor;
+  ok: boolean;
+  text: string;
+}
+export interface AttackLab {
+  marketId: string;
+  symbol: string;
+  indexPrice: number;
+  /** transparent DEX: the bot sees the order and sandwiches it. */
+  publicRun: {
+    steps: AttackStep[];
+    victimEntry: number;
+    victimExtraCostUsd: number;
+    victimSlippageBps: number;
+    botProfitUsd: number;
+    outcome: "SANDWICHED";
+  };
+  /** dorr: the bot sees only a hash, tries to crack it, and aborts. */
+  privateRun: {
+    steps: AttackStep[];
+    commitmentHash: string;
+    bruteForceAttempts: number;
+    bruteForceMatches: number;
+    victimEntry: number;
+    outcome: "ATTACK FAILED";
+  };
+  headline: string;
+}
+
+/** GET /events — the trader's own activity timeline. */
+export type EventType =
+  | "commit" | "limit-rest" | "execute" | "limit-fill"
+  | "close" | "partial-close" | "stop-loss" | "take-profit" | "liquidated"
+  | "margin" | "stops-set" | "anchor" | "deposit" | "withdraw" | "disclose";
+
+export interface DorrEvent {
+  at: string;
+  type: EventType;
+  address?: string;
+  marketId?: string;
+  detail: string;
+  /** A Sepolia transaction hash, when the event has one. */
+  txHash?: string;
+}
+
+/** The private order fields opened by a selective disclosure. */
+export interface DisclosureRevealed {
+  pairId: string;
+  side: Side;
+  price: string;
+  size: string;
+  leverage: number;
+  margin: string;
+  nonce: string;
+}
+
+/** POST /disclose — a signed opening of a hidden order to a chosen audience. */
+export interface Disclosure {
+  kind: "dorr-selective-disclosure/v1";
+  subject: "order";
+  orderId: string;
+  audience: string;
+  /** the committed value published when the order was sealed. */
+  commitment: string;
+  /** the opened preimage — share ONLY with the intended auditor. */
+  revealed: DisclosureRevealed;
+  issuedAt: string;
+  statement: string;
+}
+
+/** POST /disclose/verify — verdict on a disclosure handed to you (no auth). */
+export interface DisclosureVerdict {
+  valid: boolean;
+  recomputed: string;
+  commitment: string;
+  matches: boolean;
+  reason: string;
+}
+
+/** GET /stats — exchange telemetry: per-market OI/skew/funding + global TVL/volume. */
+export interface MarketStat {
+  id: string;
+  symbol: string;
+  base: string;
+  indexPrice: number | null;
+  markPrice: number | null;
+  openPositions: number;
+  longOiUsd: number;
+  shortOiUsd: number;
+  openInterestUsd: number;
+  skewUsd: number;
+  fundingRateHourly: number;
+}
+export interface Stats {
+  markets: MarketStat[];
+  global: {
+    openInterestUsd: number;
+    openPositions: number;
+    accounts: number;
+    tvlUsd: number;
+    volumeUsd: number;
+    insuranceFundUsd: number;
+    anchors: number;
+  };
+  at: string;
+}
+
+/** GET /ops/solvency — attestation that the on-chain vault ≥ credited balances. */
+/** Vault solvency, read live off Sepolia. Every field is the chain's. */
+export interface Solvency {
+  solvent: boolean;
+  reservesUsd: number;
+  liabilitiesUsd: number;
+  surplusUsd: number;
+  collateralizationRatio: number | null;
+  vaultAddress: string;
+  at: string;
+  explorerUrl: string;
+  note: string;
+}
+
+/** POST /demo/batch — uniform-price batch auction: a sandwich nets $0 structurally. */
+export interface BatchDemo {
+  marketId: string;
+  symbol: string;
+  indexPrice: number;
+  victim: { side: Side; marginUsd: number; leverage: number; sizeBase: number };
+  epoch: {
+    orders: Array<{ label: string; side: Side; sizeBase: number; commitment: string }>;
+    clearingPrice: number;
+    matchedBase: number;
+    netImbalanceBase: number;
+    impactBps: number;
+  };
+  attack: {
+    frontRunSizeBase: number;
+    botBuyPrice: number;
+    botSellPrice: number;
+    botProfitUsd: number;
+    victimPriceWithBot: number;
+    victimPriceWithoutBot: number;
+    victimExtraCostUsd: number;
+  };
+  sequential: { botProfitUsd: number; victimExtraCostUsd: number; victimSlippageBps: number };
+  headline: string;
+}
+
+/** POST /demo/sealed — REAL privacy from the operator via drand timelock. */
+export interface SealedDemo {
+  marketId: string;
+  symbol: string;
+  indexPrice: number;
+  drand: { network: string; currentRound: number; periodSec: number };
+  sealed: {
+    targetRound: number;
+    secondsUntilOpen: number;
+    commitment: string;
+    ciphertextPreview: string;
+    ciphertextBytes: number;
+    operatorCanReadNow: false;
+    blindReason: string;
+  };
+  epoch: {
+    orders: Array<{ label: string; side: Side; sizeBase: number; commitment: string }>;
+    clearingPrice: number;
+    netImbalanceBase: number;
+    membershipRoot: string;
+    allAtOnePrice: true;
+  };
+  attack: { botProfitUsd: number };
+  headline: string;
+}
+
+// ─── fetch plumbing ───────────────────────────────────────────────────────────
+
+export class OperatorError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "OperatorError";
+    this.status = status;
+  }
+}
+
+async function req<T>(path: string, init?: RequestInit): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(`${OPERATOR}${path}`, {
+      ...init,
+      headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
+      cache: "no-store",
+    });
+  } catch (e) {
+    throw new OperatorError(`operator unreachable at ${OPERATOR}`, 0);
+  }
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new OperatorError(
+      typeof body?.error === "string" ? body.error : `HTTP ${res.status}`,
+      res.status,
+    );
+  }
+  return body as T;
+}
+
+const get = <T>(path: string) => req<T>(path);
+const post = <T>(path: string, body?: unknown) =>
+  req<T>(path, { method: "POST", body: JSON.stringify(body ?? {}) });
+
+// ─── wallet-signature auth ────────────────────────────────────────────────────
+// The connected wallet signs each value-moving request; the operator verifies the
+// signature is fresh, non-replayable, and bound to the acting address. The message
+// format must byte-match the server (auth.ts:authMessage).
+export interface DataSignature { signature: string; key: string }
+export interface AuthEnvelope { signer: string; ts: number; sig: DataSignature }
+export type WalletSigner = (action: string, params: Record<string, unknown>) => Promise<AuthEnvelope>;
+
+let _signer: WalletSigner | null = null;
+/** Called by the wallet provider once connected; cleared on disconnect. */
+export function setWalletSigner(fn: WalletSigner | null) { _signer = fn; }
+
+function toHex(s: string): string {
+  return Array.from(new TextEncoder().encode(s)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+/** Canonical message the wallet signs — MUST match server auth.ts:authMessage. */
+export function authMessage(action: string, params: Record<string, unknown>, ts: number): string {
+  const canonical = JSON.stringify(params, Object.keys(params).sort());
+  return `dorr:${action}\n${canonical}\nts:${ts}`;
+}
+/** Build a signer from a connected Mesh wallet + its bech32 address. */
+/**
+ * EVM wallet signer (EIP-191 personal_sign) — dorr settles on Sepolia, so the
+ * identity that authorises a value-moving call is an EVM account. The signed
+ * message is byte-identical to what the operator reconstructs, so the server can
+ * recover the signer and reject anything it can't attribute to the acting address.
+ */
+export function evmSigner(
+  walletClient: { signMessage: (args: { account: `0x${string}`; message: string }) => Promise<string> },
+  address: string,
+): WalletSigner {
+  return async (action, params) => {
+    const ts = Date.now();
+    const message = authMessage(action, params, ts);
+    const signature = await walletClient.signMessage({
+      account: address as `0x${string}`,
+      message,
+    });
+    // `key` is unused for EVM (the address is recoverable from the signature);
+    // kept so the envelope shape stays stable across wallet backends.
+    return { signer: address, ts, sig: { signature, key: "" } };
+  };
+}
+
+/** POST a value-moving action, attaching a wallet signature when a signer is set. */
+async function postSigned<T>(path: string, action: string, params: Record<string, unknown>): Promise<T> {
+  const auth = _signer ? await _signer(action, params) : undefined;
+  return post<T>(path, { ...params, ...(auth ? { auth } : {}) });
+}
+
+// ─── endpoints ────────────────────────────────────────────────────────────────
+
+export interface ChainInfo {
+  network: string;
+  chainId: number;
+  explorer: string;
+  contracts: { vault: string };
+  collateral: { address: string; symbol: string; decimals: number; totalSupply: string };
+  solvency: { solvent: boolean; reserves: number; liabilities: number };
+  relayer: { address: string; eth: number } | null;
+  explorerUrls: { vault: string; collateral: string };
+}
+
+export interface OperatorConfig {
+  chain: string;
+  chainId: number;
+  explorerBase: string;
+  oracle: string;
+  relayer: string;
+  markets: Array<{ id: string; symbol: string; base: string; maxLeverage: number; feed: string }>;
+  mev: { pool: string | null; baseToken: string | null; quoteToken: string | null };
+  wallets: { trader: string | null; searcher: string | null };
+  /** A real funded account the UI follows read-only when no wallet is connected. */
+  spectatorAddress: string | null;
+  vault: string | null;
+  settlementAddress: string | null;
+}
+
+export const operator = {
+  health: () => get<Health>("/health"),
+
+  config: () => get<OperatorConfig>("/config"),
+
+  markets: async () => (await get<{ markets: Market[] }>("/markets")).markets,
+
+  account: (address: string) => get<Account>(`/account/${encodeURIComponent(address)}`),
+
+  commitOrder: (p: {
+    address: string;
+    marketId: string;
+    side: Side;
+    marginUsd: number;
+    leverage: number;
+    privacyMode: PrivacyMode;
+    orderType?: OrderType;
+    limitPrice?: number;
+    maxSlippageBps?: number;
+  }) => {
+    // Byte-match the server's reconstructed params (routes.ts:/orders/commit):
+    // orderType is always present; limitPrice/maxSlippageBps only when supplied.
+    const params: Record<string, unknown> = {
+      address: p.address,
+      marketId: p.marketId,
+      side: p.side,
+      marginUsd: p.marginUsd,
+      leverage: p.leverage,
+      privacyMode: p.privacyMode,
+      orderType: p.orderType === "limit" ? "limit" : "market",
+      ...(p.limitPrice != null ? { limitPrice: Number(p.limitPrice) } : {}),
+      ...(p.maxSlippageBps != null ? { maxSlippageBps: Number(p.maxSlippageBps) } : {}),
+    };
+    return postSigned<CommitResult>("/orders/commit", "commit", params);
+  },
+
+  executeOrder: (orderId: string) =>
+    postSigned<ExecuteResult>(`/orders/${encodeURIComponent(orderId)}/execute`, "execute", { orderId }),
+
+  /** Cancel a resting (committed) order — releases its locked margin. Owner-signed. */
+  cancelOrder: (orderId: string) =>
+    postSigned<{ success: boolean; order: Order }>(
+      `/orders/${encodeURIComponent(orderId)}/cancel`,
+      "cancel",
+      { orderId },
+    ),
+
+  order: (orderId: string) => get<Order>(`/orders/${encodeURIComponent(orderId)}`),
+
+  positions: async (address: string) =>
+    (await get<{ positions: Position[] }>(`/positions/${encodeURIComponent(address)}`)).positions,
+
+  /** Close all (fraction=1) or part (0<fraction<1) of a position. */
+  closePosition: (positionId: string, fraction = 1) =>
+    postSigned<ExecuteResult>(`/positions/${encodeURIComponent(positionId)}/close`, "close", {
+      positionId,
+      fraction,
+    }),
+
+  /** Add (delta>0) or remove (delta<0) margin on an open position. */
+  adjustMargin: (positionId: string, delta: number) =>
+    postSigned<{ position: Position }>(`/positions/${encodeURIComponent(positionId)}/margin`, "margin", {
+      positionId,
+      delta,
+    }),
+
+  /**
+   * Set/clear the hidden stop-loss & take-profit. A number sets, `null` clears,
+   * omitting a field leaves it unchanged. Params are byte-matched to the server
+   * (routes.ts:/positions/:id/stops) so the wallet signature validates.
+   */
+  setStops: (
+    positionId: string,
+    stops: { stopLoss?: number | null; takeProfit?: number | null },
+  ) => {
+    // Mirror the server: null → null, number → Number(...), absent → undefined.
+    // JSON.stringify drops undefined-valued keys, so the canonical message matches.
+    const normalized = {
+      stopLoss: stops.stopLoss === null ? null : stops.stopLoss != null ? Number(stops.stopLoss) : undefined,
+      takeProfit:
+        stops.takeProfit === null ? null : stops.takeProfit != null ? Number(stops.takeProfit) : undefined,
+    };
+    return postSigned<{ position: Position }>(
+      `/positions/${encodeURIComponent(positionId)}/stops`,
+      "stops",
+      { positionId, ...normalized },
+    );
+  },
+
+  /** The connected wallet's private resting limit orders (hidden from the public feed). */
+  restingOrders: async (address: string) =>
+    (await get<{ orders: RestingOrder[] }>(`/orders/resting/${encodeURIComponent(address)}`)).orders,
+
+  job: (jobId: string) => get<Job>(`/jobs/${encodeURIComponent(jobId)}`),
+
+  feed: async () => (await get<{ feed: FeedEntry[] }>("/feed")).feed,
+
+  /**
+   * Every PnL the vault has paid, from its own `PnlApplied` logs. Not the
+   * operator's account of what it settled — the chain's.
+   */
+  settlements: async (limit = 25) =>
+    (await get<{ settlements: Settlement[] }>(`/settlement/history?limit=${limit}`)).settlements,
+
+  abDemo: (p: { marketId: string; side: Side; marginUsd: number; leverage: number }) =>
+    post<AbDemo>("/demo/ab", p),
+
+  /** MEV attack lab — same sandwich attack run against a public DEX and dorr. */
+  runAttack: (p: { marketId: string; side: Side; marginUsd: number; leverage: number }) =>
+    post<AttackLab>("/demo/attack", p),
+
+  /** Batch auction demo — a sandwich nets $0 under uniform-price clearing. */
+  batchDemo: (p: { marketId: string; side?: Side; marginUsd?: number; leverage?: number }) =>
+    post<BatchDemo>("/demo/batch", p),
+
+  /** Sealed-bid demo — the operator is timelock-blind until the drand round lands. */
+  sealedDemo: (p: { marketId: string; side?: Side; marginUsd?: number; leverage?: number }) =>
+    post<SealedDemo>("/demo/sealed", p),
+
+  /** Current drand epoch — the round new sealed orders should target. */
+  batchEpoch: () =>
+    get<{ drandNetwork: string; currentRound: number; epochCloseRound: number; secondsToClose: number }>("/batch/epoch"),
+
+  /** Submit a client-SEALED order — the operator stores ciphertext it can't read. */
+  sealOrder: async (p: {
+    address: string;
+    marketId: string;
+    commitment: string;
+    ciphertext: string;
+    targetRound: number;
+    maxMarginUsd: number;
+  }) => {
+    // owner-signed over {commitment, targetRound} to match the server (routes:/orders/seal)
+    const auth = _signer ? await _signer("seal", { commitment: p.commitment, targetRound: p.targetRound }) : undefined;
+    return post<{ success: boolean; id: string; epochId: string; targetRound: number }>("/orders/seal", {
+      ...p,
+      ...(auth ? { auth } : {}),
+    });
+  },
+
+  /** Exchange telemetry — per-market OI/skew/funding + global TVL/volume. */
+  stats: () => get<Stats>("/stats"),
+
+  /** Proof of solvency — on-chain vault reserves vs credited liabilities. */
+  solvency: () => get<Solvency>("/ops/solvency"),
+
+  /**
+   * The settlement layer, read live off Sepolia.
+   *
+   * Every field here comes from a contract call made at request time — the
+   * operator does not get to assert its own solvency.
+   */
+  chainInfo: () =>
+    get<ChainInfo>("/chain/info"),
+
+  /**
+   * Force the operator to re-read a trader's vault collateral, skipping its
+   * cache. Called right after a deposit or withdrawal confirms so the terminal
+   * reflects it immediately instead of on the next poll.
+   */
+  syncCollateral: (address: string) =>
+    post<{ balance: number; deposited: number; pnl: number; locked: number; free: number }>(
+      `/chain/sync/${address}`,
+      {},
+    ),
+
+  /** One trader's collateral as the vault itself accounts for it. */
+  chainAccount: (address: string) =>
+    get<{ address: string; balance: number; locked: number; free: number }>(
+      `/chain/account/${address}`,
+    ),
+
+  /** The trader's own activity timeline (all events when no address). */
+  events: async (address?: string) =>
+    (await get<{ events: DorrEvent[] }>(`/events${address ? `?address=${encodeURIComponent(address)}` : ""}`))
+      .events,
+
+  /**
+   * Open a hidden order to a chosen audience. Signs `{ orderId, audience }` so
+   * only the order's owner can disclose it (byte-matched to routes.ts:/disclose).
+   */
+  disclose: async (orderId: string, audience: string) =>
+    (await postSigned<{ success: boolean; disclosure: Disclosure }>("/disclose", "disclose", {
+      orderId,
+      audience: audience || "auditor",
+    })).disclosure,
+
+  /** Verify a disclosure you were handed against its on-chain commitment (no auth). */
+  verifyDisclosure: (disclosure: Disclosure) =>
+    post<DisclosureVerdict>("/disclose/verify", { disclosure }),
+};
+
+// ─── MEV Shield ───────────────────────────────────────────────────────────────
+// The public-vs-private lane experiment. Everything below reflects real Sepolia
+// transactions: `seenInMempool` is an independent observer's record, not a claim
+// echoed back from an API.
 
 export interface MevStatus {
   configured: boolean;
@@ -56,6 +712,10 @@ export interface MevStatus {
   privateLaneReady: boolean;
   /** A duel is in flight on the operator — true even for clients that just loaded. */
   duelRunning?: boolean;
+  /** ISO time the in-flight duel started, so a reload shows real elapsed time. */
+  duelStartedAt?: string | null;
+  /** Job id of the in-flight duel, so a reload can re-attach to its stages. */
+  duelJobId?: string | null;
   note: string;
 }
 
@@ -139,44 +799,6 @@ export interface MevAgent {
   everSeenInMempool?: number;
 }
 
-// ─── fetch plumbing ──────────────────────────────────────────────────────────
-
-export class OperatorError extends Error {
-  status: number;
-  constructor(message: string, status: number) {
-    super(message);
-    this.name = "OperatorError";
-    this.status = status;
-  }
-}
-
-async function req<T>(path: string, init?: RequestInit): Promise<T> {
-  let res: Response;
-  try {
-    res = await fetch(`${OPERATOR}${path}`, {
-      ...init,
-      headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
-      cache: "no-store",
-    });
-  } catch {
-    throw new OperatorError(`operator unreachable at ${OPERATOR}`, 0);
-  }
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new OperatorError(
-      typeof (body as { error?: string })?.error === "string"
-        ? (body as { error: string }).error
-        : `HTTP ${res.status}`,
-      res.status,
-    );
-  }
-  return body as T;
-}
-
-const get = <T>(path: string) => req<T>(path);
-const post = <T>(path: string, body?: unknown) =>
-  req<T>(path, { method: "POST", body: JSON.stringify(body ?? {}) });
-
 export interface ExtractionPoint {
   slippageBps: number;
   quotedOut: string;
@@ -200,12 +822,11 @@ export interface ExtractionCurveData {
 export const mevApi = {
   extraction: (amountIn: string) =>
     get<ExtractionCurveData>(`/mev/extraction?amountIn=${encodeURIComponent(amountIn)}`),
+  agent: () => get<MevAgent>("/mev/agent"),
   status: () => get<MevStatus>("/mev/status"),
   leaderboard: () => get<MevLeaderboard>("/mev/leaderboard"),
   duels: async (limit = 25) => (await get<{ duels: MevDuel[] }>(`/mev/duels?limit=${limit}`)).duels,
   duel: (id: string) => get<MevDuel>(`/mev/duels/${id}`),
-  agent: () => get<MevAgent>("/mev/agent"),
-  job: (id: string) => get<Job>(`/jobs/${id}`),
   chains: () =>
     get<{
       chains: Array<{ chainId: number; name: string; enabled: boolean; testnet: boolean; privateMempool: boolean }>;

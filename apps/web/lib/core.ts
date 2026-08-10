@@ -1,4 +1,4 @@
-// Core utilities — pure helpers only (EVM config removed in the Cardano port).
+// Core utilities — pure helpers only. Chain config lives in the wallet hooks.
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 
@@ -70,4 +70,25 @@ export function readableError(e: unknown): string {
 
   // Otherwise: first line only, without the library's version footer.
   return raw.split("\n").map((l) => l.trim()).filter(Boolean)[0]?.replace(/\s*Version:.*$/i, "").slice(0, 180) ?? "Something went wrong.";
+}
+
+/**
+ * Format a base-asset size for humans.
+ *
+ * Fixed precision does not survive markets whose units differ by four orders of
+ * magnitude: `toFixed(2)` renders a $200 BTC position as `0.00`, which reads as
+ * a broken engine rather than a small position. Precision scales with
+ * magnitude, and a non-zero size never renders as zero.
+ *
+ * Mirrors `formatSize` in the operator so the same position reads identically
+ * in the activity log and in the positions table.
+ */
+export function formatSize(size: number): string {
+  const n = Math.abs(size);
+  if (n === 0) return "0";
+  if (n >= 1000) return size.toFixed(0);
+  if (n >= 1) return size.toFixed(2);
+  if (n >= 0.01) return size.toFixed(4);
+  if (n >= 0.0001) return size.toFixed(6);
+  return size.toExponential(2);
 }

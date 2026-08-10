@@ -1,138 +1,133 @@
-# 🏗️ Architecture
+# Architecture
 
-dorr fuses two things that normally don't meet: a **real perps trading app** (UniPerp's UI + engine) and a **ZK privacy layer** (the Anti-Front-Running-ZKPerps research on Midnight). The result is a perp where your order is a zero-knowledge commitment until it settles.
+Two subsystems sharing one operator, one chain, and one faucet token.
 
-## The five layers
+**MEV Shield** measures what the public mempool costs you. **The perps** build a
+venue where you never have to enter it. Both run on Ethereum Sepolia and execute
+through KeeperHub.
 
-```mermaid
-flowchart TB
-  U["👤 Trader + Lace/Eternl (CIP-30)"]
+---
 
-  subgraph FE["① Frontend — Next.js (apps/web)"]
-    UI["Trading terminal · charts · portfolio"]
-    W["Mesh wallet · signs every action"]
-  end
+## The operator
 
-  subgraph OP["② Operator — Node/Hono (services/operator)"]
-    EX["vAMM executor (Pyth mark + impact)"]
-    ENG["engine: margin · funding · liquidation"]
-    AUTH["wallet-sig auth · privacy projection"]
-    PR["Midnight prover driver"]
-    CX["Cardano tx builder (Lucid)"]
-    KP["keepers: price · funding · liquidation"]
-  end
+A single Hono server on Bun (`services/operator`). It is stateful, and
+deliberately so — but the state it owns is carefully bounded:
 
-  subgraph MN["③ Midnight — real ZK (local net + proof server)"]
-    C1["zkperps-order · commit + authority"]
-    C2["zkperps-matching · execution attest"]
-    C3["zkperps-settlement · state digest"]
-  end
+| State | Where it lives | Who can change it |
+|---|---|---|
+| Duel history | SQLite (`data/mev.db`) | the operator |
+| Orders, positions, jobs | JSON (`data/state.json`) | the operator |
+| **Collateral** | `DorrVault` on Sepolia | **only the depositor** |
+| **Settled PnL** | `DorrVault` on Sepolia | **only KeeperHub** |
 
-  subgraph CD["④ Cardano preprod"]
-    DUSD["dUSD policy + faucet"]
-    VLT["margin vault (Aiken, operator-sig)"]
-    ANC["settlement anchor (inline datum)"]
-    NFT["CIP-68 position NFT"]
-  end
+The bottom two rows are the load-bearing ones. Everything the operator can
+change is either a measurement it published or bookkeeping it must reconcile
+against the chain.
 
-  PY["⑤ Pyth Hermes (off-chain prices)"]
+---
 
-  U --> UI --> W -->|signed request| OP
-  PY -.prices.-> EX
-  PY -.prices.-> KP
-  W -->|deposit dUSD| VLT
-  PR --> C1 & C2 & C3
-  CX --> DUSD & VLT & ANC & NFT
-  style MN fill:#0b7,stroke:#0b7,color:#fff
-```
-
-| Layer | Package | Real vs stub |
-|-------|---------|--------------|
-| Frontend | `apps/web` | ported UniPerp premium UI, EVM ripped out, Mesh/Lace + operator client |
-| Operator | `services/operator` | vAMM, accounting, auth, ZK driver, Cardano tx, keepers, A/B demo |
-| Engine | `packages/engine` | off-chain perps engine from the ZKPerps research (margin/funding/liquidation/commitment) |
-| Compact | `vendor/zkperps` + `dorr-*` drivers | 5 real Midnight Compact contracts + per-trade proof drivers |
-| Aiken | `packages/contracts-aiken` | dUSD policy · margin vault · settlement anchor (Plutus V3, `aiken build` green) |
-
-## A trade, end to end
-
-```mermaid
-sequenceDiagram
-  autonumber
-  participant U as Trader (wallet)
-  participant O as Operator
-  participant M as Midnight (ZK)
-  participant C as Cardano preprod
-  participant P as Public feed
-
-  U->>C: deposit dUSD to vault (user-signed)
-  U->>O: commit {market,side,size,lev} + wallet signature
-  O->>M: deploy zkperps-order + proveTraderOrderAuthority (ZK)
-  O->>P: publish ONLY the 32-byte commitment hash
-  Note over P: 🔒 side/size/price/leverage hidden — bots see nothing
-  U->>O: execute
-  O->>O: fill on the oracle-priced vAMM
-  O->>M: proveAndFinalizeMatch (ZK, execution attest)
-  O->>C: mint CIP-68 position NFT
-  U->>O: close
-  O->>M: proveSettlementTransition (ZK)
-  O->>C: anchor settlement digest (inline datum)
-  O->>M: bindL1SettlementAnchor (ZK, Midnight↔Cardano)
-  O->>U: PnL settled in dUSD; withdraw available
-```
-
-Every step above is **real** — [proven on-chain](./TESTING.md#on-chain-e2e) with 4 ZK proofs and 6 preprod txs in one run.
-
-## The privacy boundary
-
-The single source of truth for "what the public can see" is one pure function, `publicFeedView` (`services/operator/src/privacy.ts`), pinned by tests:
+## MEV Shield
 
 ```mermaid
 flowchart LR
-  O["Order: side, size, price, leverage, trader, nonce"]
-  O -->|private mode| H["Public sees: { market, 32-byte hash }"]
-  O -->|public mode - A/B foil| L["Public sees: EVERYTHING (leaked, on purpose)"]
-  H --> B1["🤖 bot: no signal → cannot front-run"]
-  L --> B2["🤖 bot: full signal → sandwiches the victim"]
+  subgraph lanes[The same swap, twice]
+    direction TB
+    PUB[Public lane<br/>sponsored REST executor]
+    PRIV[Private lane<br/>workflow write-node<br/>usePrivateMempool: true]
+  end
+  PUB -->|broadcast| MP[(Sepolia public mempool)]
+  PRIV -.->|never appears| MP
+  MP --> SEARCH[Searcher bot<br/>own key, own gas]
+  SEARCH -->|front-run + back-run| POOL
+  PUB --> POOL[MevPool<br/>x*y=k, 30bp]
+  PRIV --> POOL
+  MP --> OBS[Mempool observer<br/>independent witness]
+  POOL --> MEASURE{{quoted vs actual}}
+  OBS --> MEASURE
+  MEASURE --> DB[(SQLite)]
 ```
 
-The commitment is `SHA-256(pairId, side, price, size, leverage, margin, nonce)` — hiding (no field is recoverable) and binding (any change alters the hash). Brute-forcing the 128-bit nonce is infeasible. See [SECURITY](./SECURITY.md).
+The experimental design is the point. Both lanes are the same swap, the same
+pool, the same signing wallet, the same relayer — differing in exactly one
+boolean. Anything else and the comparison would prove nothing.
 
-## The oracle-priced vAMM
+Three parts are worth understanding:
 
-Ported from UniPerp's constant-product model: virtual reserves, price impact on fills, and a keeper that re-centers the pool to the Pyth index. One trader can open a leveraged long/short with no counterparty; the A/B demo can run a *real* sandwich on it (then restore the pool).
+**The searcher is a real adversary.** Its own key, its own ETH, bidding priority
+fee for block position against a live mempool feed. It loses races, and when it
+does the duel records `$0.00` rather than hiding the run.
 
-```
-mark = virtualQuote / virtualBase        (constant product: base × quote = k)
-fill walks the curve → price impact       LONG buys base (price ↑), SHORT sells (price ↓)
-keeper recenters to Pyth when drift > 5bps
-```
+**The observer is an independent witness.** It subscribes to pending
+transactions and is not involved in sending either lane, so "this hash was never
+public" is a claim something other than the sender can check. Transactions mined
+while it was disconnected are reported as *unobserved*, never as private.
 
-## Trust model (read this)
+**Relayed transactions don't target the pool.** KeeperHub executes through a
+relayer, wrapping the call as `relayer(account, target, value, bytes)`. A
+searcher matching on `tx.to == pool` sees nothing — which would make every
+relayed trade *look* private. `decodeSwapFromCalldata` scans for the selector
+instead, and is pinned against real relayed transactions in the tests.
+
+---
+
+## The perps
 
 ```mermaid
-flowchart TB
-  subgraph T["🔓 Trustless today"]
-    P1["Order privacy — public/mempool cannot see or front-run"]
-    P2["L1 audit trail — every settlement anchored on Cardano"]
-  end
-  subgraph N["🔑 Trusted in v1 (like a sequencer)"]
-    N1["Operator matches + executes (sees plaintext post-reveal)"]
-    N2["Operator custodies collateral (vault = operator-sig)"]
-    N3["ZK attests the pipeline, not the trade math"]
-  end
-  N -.->|v2 path| V["Pyth Lazer on Cardano + Aiken settlement/liquidation validator = trustless settlement"]
+flowchart LR
+  T[Trader] -->|deposit mUSD| V[(DorrVault<br/>Sepolia)]
+  T -->|sealed order| ENG[Matching engine<br/>off chain, private]
+  CL[Chainlink feeds] --> ENG
+  ENG -->|proposed zero-sum batch| KH[KeeperHub<br/>settlement wallet]
+  KH -->|applyPnl, private routing| V
+  V -->|accountOf / PnlApplied| ENG
+  ENG -.->|cannot write| V
 ```
 
-We claim **"the public can't see or front-run your order"** — not "trustless perp." That distinction is deliberate and documented; see [SECURITY → honest scope](./SECURITY.md#honest-scope).
+Read the dotted arrow first: **the engine cannot write to the vault.** It reads
+balances and it proposes settlements. `applyPnl` is `onlySettlement`,
+`settlement` is KeeperHub's wallet, and every batch must sum to zero.
 
-## Runtime processes
+The rest follows from that constraint:
 
-| Process | Port | Notes |
-|---------|------|-------|
-| web (Next.js) | 3000 | premium trading terminal |
-| operator (Hono) | 8790 | the brain |
-| Midnight proof server | 6301 | real ZK proofs |
-| Midnight indexer (GraphQL v3) | 8088 | local net |
-| Midnight node RPC | 9945 | local net |
-| Cardano preprod | remote | Blockfrost primary, keyless Koios fallback |
+**Orders are commitments.** `SHA-256(fields ‖ 128-bit nonce)` is published; the
+fields are not. Sealed orders add a drand timelock so the operator itself can't
+read them before the epoch clears.
+
+**Prices are Chainlink**, read on chain per market. A feed that can't be read
+disables its market.
+
+**Execution is a vAMM** seeded from the index and recentred as it drifts. The
+pool is seeded *before* the port opens — an order commits against the oracle but
+fills against the pool, so a pool that doesn't exist yet would accept a commit
+and then strand the margin behind an order that can never fill.
+
+**Settlement is batched and idempotent.** What has been paid is read from the
+vault's own `PnlApplied` events; what is owed is the difference. Settle twice
+and the second batch is empty because the arithmetic says so, not because the
+operator remembered correctly.
+
+---
+
+## Why they share a token
+
+`mUSD` is the collateral for the perps and the quote asset for the MEV pool. Its
+`mint` is permissionless, so one faucet funds both halves and anyone can
+reproduce either experiment without asking us for testnet tokens.
+
+It is an 18-decimal dollar stand-in — 1 mUSD := $1 — so a base→quote shortfall
+is already denominated in dollars with no oracle in the trust path. That matters
+for MEV Shield specifically: the headline number doesn't depend on a price feed
+being right.
+
+---
+
+## Layout
+
+| Path | What |
+|---|---|
+| `contracts/src/mev/` | `MevPool` (sandwichable AMM), `MevToken` (open faucet) |
+| `contracts/src/DorrVault.sol` | collateral + zero-sum `applyPnl` |
+| `services/operator/src/mev/` | searcher, observer, duel runner, private lane, SQLite |
+| `services/operator/src/` | perps engine, Chainlink oracle, vAMM, settlement |
+| `apps/web/` | Next.js app — `/` perps terminal, `/mev` MEV Shield |
+| `packages/engine/` | the order-commitment primitive, shared by both |

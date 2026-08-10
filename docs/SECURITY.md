@@ -1,117 +1,99 @@
-# 🔒 Security, privacy & honest scope
+# Security, privacy & honest scope
 
-Four questions matter: **can the public see my order?** (no), **can the *operator* see or front-run my order?** (no, if you seal it — via drand timelock), **can someone place a trade as me?** (no), and **is it fully trustless?** (not yet — and we say exactly where).
+Four questions. The first three have clean answers; the fourth is where the
+honesty lives.
 
-## 1. Privacy — the public can't see your order
+---
 
-Every order is a commitment on Midnight:
+## 1. Can the public see my order? — No.
 
-```
-commitment = SHA-256(pairId, side, price, size, leverage, margin, nonce)
-```
+A private order publishes `SHA-256(pairId ‖ side ‖ price ‖ size ‖ leverage ‖
+margin ‖ nonce)` and nothing else. The nonce is 128 bits, so the preimage space
+is not searchable — the Attack Lab runs 25,000 real SHA-256 guesses against a
+real commitment and finds zero, which demonstrates the shape of the problem
+rather than its scale.
 
-- **Hiding** — the 32-byte hash reveals none of the fields (tested: no field value appears in the hash; the only public projection contains just `{ market, commitmentHash }`).
-- **Binding** — changing *any* field changes the hash (tested field-by-field).
-- **Brute-force-proof** — an attacker who knows everything *except* the 128-bit `nonce` still can't match the commitment (tested: 20k guesses, zero hits; the real space is 2¹²⁸).
+The public feed shows exactly what an observer gets: a hash, a market, a
+timestamp. Flip an order to **public foil** and you can watch what the same
+order would have leaked.
 
-The single public projection is `publicFeedView()` (`services/operator/src/privacy.ts`) — the *only* code path that exposes an order. `leaksSensitiveData()` asserts a private view carries nothing beyond the safe fields. See `test/privacy.test.ts`.
+Stop-losses and take-profits are never published at all. A stop you can see is a
+stop you can hunt.
 
-## 2. Anti-MEV — a bot can't front-run what it can't see
+## 2. Can the *operator* see or front-run my order? — Not if you seal it.
 
-On a public perp, your pending order sits in the mempool; a searcher front-runs it, you fill worse, they profit. dorr removes the *signal*: the public feed shows only a hash until execution.
+An ordinary private order is hidden from everyone except the operator, which has
+to read it to match it. That is a real trust assumption and we don't paper over
+it.
 
-The **A/B showcase** (`/demo/ab`) proves it both ways:
-- **`mode: "sim"`** (default) — deterministic scratch-clone of the live pool; reproducible on stage, leaves the live pool untouched.
-- **`mode: "live"`** — runs an **actual** front-run → victim → back-run on the live vAMM (recenter paused, reserves snapshot + restored). A real bot really sandwiches the public victim (~150 bps), and against a dorr-private order it's **blind** ($0). The `integration.test.ts` pins the pool-restore invariant so real traders are never left perturbed.
+Sealed orders remove it for the window that matters: the order is encrypted to a
+future **drand** round, so it is unreadable — by us, by anyone — until that
+round's key is published. The epoch then clears at a **uniform price**, which
+means inserting yourself ahead of a specific order buys you nothing, because
+everyone in the epoch gets the same price.
 
-## 2b. Sealed-bid — the *operator* can't see or front-run your order either
+## 3. Can someone trade as me? — No.
 
-Hiding an order from the public still leaves the operator (the matching engine) able to read it. dorr closes that with a **sealed-bid batch auction over drand timelock encryption**:
+With `DORR_AUTH=1`, every value-moving action requires an EIP-191
+`personal_sign` over the action and its parameters. The operator recovers the
+signer and rejects anything that doesn't match the address in the request.
+Deposits and withdrawals are signed by your wallet directly against the vault.
 
-```
-client:   ciphertext = timelockEncrypt(order, drandRound R)   // tlock-js, IBE over BLS12-381
-operator: stores { ciphertext, commitment } — CANNOT decrypt until R's beacon exists
-at round R (after the batch freezes): decrypt → verify commitment → clear the epoch
-          at ONE uniform price → open positions → anchor the batch membership on Cardano L1
-```
+## 4. Is it trustless? — No, and here is exactly where.
 
-- **Operator-blind** — the operator holds only ciphertext until drand (the **League of Entropy**, a live 12-of-22 threshold network) publishes round `R`'s beacon, which is *after* the batch is frozen. It never sees your order in time to trade ahead of it. *Verified live: the operator's decrypt is refused (`"too early — decryptable at round N"`).*
-- **No ordering edge** — the whole epoch clears at one uniform price, so a bot that inserts itself pays the same price ($0 profit) even if it *could* see the order.
-- **Censorship evidence** — the exact sealed-batch membership root is anchored on **Cardano L1** at settlement (real preprod tx, live-verified `742dc0a9…`), so the operator can't fabricate, hide, or reorder the set.
+**Trusted:** the matching engine. It sees the book — that is what makes matching
+possible at all — and it decides fill prices against the vAMM. A dishonest
+operator could mis-price a fill. Making that verifiable needs a proof system
+this does not have.
 
-Proven by `test/sealbid.test.ts` + `test/sealed-e2e.test.ts` (8 tests against the **live** drand network): operator-blind, round-trip, uniform clearing, commitment binding, sealed→position, tamper-drop-and-refund, future-round-stays-sealed. Driveable from the UI ("Seal from the operator" switch) — the browser does the encryption, so the operator never receives plaintext.
+**Not trusted, and provably so:**
 
-**Residual trust here:** drand's threshold (external/decentralized, not the operator) and operator **liveness/censorship** (evidence via the L1 anchor, not prevention). The clearing math is **auditable, not yet ZK-proven**.
+| | Enforced by |
+|---|---|
+| Your collateral can only be withdrawn by you | `DorrVault.withdraw` checks the depositor; there is deliberately **no** token-moving admin function |
+| The operator cannot credit you PnL | `applyPnl` is `onlySettlement`; `settlement` is KeeperHub's wallet |
+| The operator cannot inflate total backing | every batch must sum to **zero**, checked on chain |
+| The operator cannot over-credit against reserves | `applyPnl` reverts on `BackingShortfall` |
+| The operator cannot double-pay | what's been settled is read from the vault's `PnlApplied` events, not from local state |
 
-## 2c. Non-custodial vault — the operator can't seize your collateral
+That last row is a real incident, not a hypothetical. During development the
+vault paid −1.0002 mUSD against −0.5001 owed, because settlement decremented a
+local counter and a batch landed that the operator didn't observe. The fix was
+to stop remembering and start subtracting: the next run proposed the +0.5001
+correction, and the run after proposed nothing.
 
-A trusted-operator v1 usually means the operator custodies your funds. dorr ships a **non-custodial vault** (`packages/contracts-aiken/dorr-vault/validators/owner_vault.ak`) where a deposit can be spent **only by the depositor** (the `owner` pkh in its inline datum):
+**The upshot:** the operator can decide what you are owed. It cannot pay it,
+cannot mint it, and cannot pay itself — regardless of what its code does.
 
-```aiken
-validator owner_vault {
-  spend(datum, _r, _utxo, self) {
-    expect Some(OwnerDatum { owner }) = datum
-    list.has(self.extra_signatories, owner)   // ONLY the owner can move it
-  }
-}
-```
+---
 
-**Live-proven on Cardano preprod** (`services/operator/src/scripts/noncustodial-proof.ts`):
-- user deposits 1,000 dUSD → non-custodial vault: [`b675b375…`](https://preprod.cardanoscan.io/transaction/b675b375dd8f0bd35b2759f20f222cca2f5c8825c745a67e13e3fd68255f1fb3)
-- **the operator tries to withdraw it → the validator REJECTS the spend** (`failed script execution Spend[1]`) — it *cannot* take user funds;
-- the user reclaims with their **own** key, operator uninvolved: [`81ecf30f…`](https://preprod.cardanoscan.io/transaction/81ecf30f57d2e333317e546406344ff53297b2f95582ec74a5a92e0deeef8f5c)
+## Key handling
 
-So collateral is **self-custodied**: even if the operator vanishes or turns malicious, your deposit is reclaimable with your key. **Remaining step:** make this the *default* margin vault, which requires the on-chain settlement validator (below) so margin backing an *open* position can't be pulled — non-custodial custody and on-chain settlement are coupled.
+`ETH_DEPLOYER_KEY` and `MEV_SEARCHER_KEY` are testnet keys held in `.env`, which
+is gitignored. They control nothing of value: the searcher is an adversary
+spending its own testnet ETH, and the deployer owns contracts whose only asset
+is a permissionlessly-mintable faucet token.
 
-## 3. Auth — only you can place your trade
+The KeeperHub org key can create and fire workflows in your organisation. Treat
+it like any API credential.
 
-Every value-moving action (`commit` / `execute` / `close` / `withdraw`) is bound to a **CIP-30 wallet signature**:
+**Never point this at a network where the token is expected to hold value.**
+`MevToken.mint` is open by design so a judge can fund themselves and reproduce
+the experiment.
 
-```
-message = "dorr:<action>\n" + JSON(params, keys sorted) + "\nts:<ms>"
-client:  sig = wallet.signData( hex(message) )        // Lace/Eternl/…
-server:  verifyDataSignature(sig, key, message, addr) // cardano-verify-datasignature
-```
+---
 
-The operator checks, in order: **freshness** (±120s replay window), **no-reuse** (signature dedupe), **signer == acting address**, and the **cryptographic signature** itself. A throwing/garbage signature is treated as rejection, never a crash.
+## Known limitations
 
-**Proven end-to-end** in `test/auth-crypto.test.ts` using a *real* CIP-8 signer (bip32ed25519 + COSE + typhon address):
-- ✅ a genuine signature is accepted by the production verifier
-- ❌ tampered params (e.g. inflated margin) are rejected
-- ❌ a signature from wallet A can't authorize an action for address B
-
-Enable enforcement with `DORR_AUTH=1` (the web signs automatically when a wallet is connected). Default is off so the wallet-less demo and E2E run out of the box.
-
-## Threat model (v1)
-
-| Threat | Status | How |
-|--------|--------|-----|
-| Mempool/MEV front-running (public) | **mitigated** | order is a hash until execution |
-| **Operator** seeing / front-running your order | **mitigated** (sealed orders) | drand timelock — operator holds ciphertext, can't decrypt until the batch is frozen |
-| Ordering advantage within a batch | **mitigated** | uniform-price batch clearing — a sandwich nets $0 |
-| Operator fabricating/hiding batch membership | **mitigated** (evidence) | exact sealed-batch root anchored on Cardano L1 |
-| Order-detail leakage on-chain | **mitigated** | only commitment + anchor digest ever hit chain |
-| Placing/closing someone else's trade | **mitigated** | wallet-signature auth bound to address |
-| Signature replay | **mitigated** | freshness window + dedupe |
-| Commitment preimage recovery | **mitigated** | 128-bit nonce, SHA-256 |
-| Operator seizing user collateral | **mitigated** (non-custodial vault) | `owner_vault` — only the depositor can spend; live-proven: the operator's withdrawal attempt is **rejected on-chain** |
-| Clearing/PnL correctness on-chain | **not enforced** (v1) | clearing is auditable + membership-anchored, not yet ZK-proven |
-| Operator liveness / censorship | **trusted** (v1) | anchored membership gives evidence, not prevention |
-
-## Honest scope
-
-dorr's guarantee **today** is: *neither the public **nor the operator** can see or front-run a sealed order, the whole epoch clears at one uniform price, a self-custodial vault means the operator **can't seize your collateral**, and the batch membership + settlement leave an auditable Cardano L1 trail.* What remains **trusted** (so it's **not yet fully trustless**):
-
-- the operator is trusted for **liveness/censorship** (the L1 membership anchor makes censorship *detectable*, not impossible) and, in the **default trading path**, still manages the margin vault (the non-custodial `owner_vault` is built + on-chain-proven, but making it the default is coupled to on-chain settlement — see below);
-- the **clearing/PnL math is auditable but not yet ZK-proven** — the operator computes it off-chain (the Midnight ZK legs attest the pipeline: order authority, match, settlement transition).
-
-**Pitch it as "private order flow the operator itself can't front-run (drand-sealed), uniform-price clearing, auditable L1 trail — trusted-operator v1 for custody + clearing-correctness." That's exactly true. Don't claim "fully trustless" or "the ZK proves the trade math."**
-
-### The path to fully trustless (v2)
-1. **On-chain price** — Pyth Lazer is live on Cardano (Aiken pull-oracle); feed it into a validator.
-2. **On-chain settlement/liquidation** — an Aiken validator that enforces margin, PnL, and liquidation against that price, so the vault releases funds *trustlessly* (removes custody trust).
-3. **ZK-proven clearing** — a fixed-N Compact `zkperps-batch` circuit that proves the disclosed clearing price + net flow are the correct output of the uniform-price rule over the committed orders (removes clearing-correctness trust). ✅ **Operator-blindness (item was "user-held keys") is already done** via the drand sealed-bid — the operator never sees a sealed order's plaintext.
-
-## Not-secrets, by design
-- The **market** you trade and the **timing** of your commit are public (they're on-chain anyway). Only side/size/price/leverage/identity are hidden.
-- dUSD is a **mock testnet** stablecoin (operator-mintable) — it's collateral for the demo, not a real asset.
+- **The matching engine is trusted** (see above) and there is no fraud proof.
+- **Sealed-bid clearing is not ZK-proven.** The membership root is recorded and
+  auditable off-chain, but publishing it would need a settlement contract that
+  re-checks the clearing price against Chainlink — which isn't deployed.
+- **Settlement and the MEV lab share one KeeperHub wallet**, so they contend for
+  its nonce lock. Settlement backs off and retries; the structural fix is a
+  second wallet.
+- **The insurance fund is testnet capital.** The zero-sum invariant is genuinely
+  enforced on chain, but 50,000 mUSD is not a solvency argument for a real venue.
+- **A trader who is owed more than the fund holds** cannot be settled. The
+  operator reports that as a refusal with the numbers, rather than a revert.
+- **No rate limiting.** The operator assumes a friendly caller.

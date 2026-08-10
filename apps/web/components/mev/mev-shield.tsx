@@ -6,8 +6,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { PanelHeader } from "@/components/mev/panel-header";
-import { useJob, useMevChains, useMevDuels, useMevLeaderboard, useMevStatus } from "@/hooks/use-operator";
+import { PanelHeader } from "@/components/trading/panel-header";
+import { useJob, useMevDuels, useMevLeaderboard, useMevStatus } from "@/hooks/use-operator";
 import { mevApi } from "@/lib/operator";
 import { cn } from "@/lib/core";
 import { toast } from "sonner";
@@ -15,7 +15,6 @@ import { Loader2, Play, ShieldCheck, Swords, ExternalLink } from "lucide-react";
 import { LaneCard } from "./lane-card";
 import { MempoolFeed } from "./mempool-feed";
 import { AgentPanel } from "./agent-panel";
-import { ExtractionCurve } from "./extraction-curve";
 
 const usd = (n: number) => `$${n.toFixed(2)}`;
 
@@ -61,7 +60,6 @@ export function MevShield() {
   const { data: status, isError: statusError } = useMevStatus();
   const { data: board } = useMevLeaderboard();
   const { data: duels } = useMevDuels(25);
-  const { data: chains } = useMevChains();
   const qc = useQueryClient();
 
   const [amountIn, setAmountIn] = useState("10");
@@ -76,13 +74,45 @@ export function MevShield() {
   // next render all observe the old value. A ref updates synchronously, so the
   // second click of a double-click is refused inside the same tick.
   const inFlight = useRef(false);
-  const { data: job } = useJob(jobId);
+  // Fall back to the operator's job id: this tab may have loaded midway
+  // through a duel it did not start, and the stages are the only thing that
+  // explains what the elapsed clock is waiting for.
+  const { data: job } = useJob(jobId ?? status?.duelJobId ?? undefined);
 
   // Trust the operator, not just this tab's job handle: a reload loses `jobId`
   // but the duel keeps running, and a re-enabled button would walk straight
   // into a 409 that reads like a broken app.
   const running = job?.status === "running" || Boolean(status?.duelRunning);
   const latest = duels?.[0];
+
+  /**
+   * Elapsed time while a duel runs.
+   *
+   * A spinner that has been spinning for four minutes is indistinguishable from
+   * a hang. A counter that is still climbing is not — it is the cheapest way to
+   * say "this is working, keep waiting", and the wait here is real and
+   * unavoidable: two lanes across several blocks, one of which does not
+   * broadcast at all.
+   */
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (!running) {
+      setStartedAt(null);
+      return;
+    }
+    // Prefer the operator's start time: this tab may have loaded midway through
+    // a duel, and a stopwatch that begins at mount would report a four-minute
+    // run as thirteen seconds old.
+    const serverStart = status?.duelStartedAt ? Date.parse(status.duelStartedAt) : NaN;
+    setStartedAt((prev) => (Number.isFinite(serverStart) ? serverStart : (prev ?? Date.now())));
+  }, [running, status?.duelStartedAt]);
+  useEffect(() => {
+    if (!running || startedAt === null) return;
+    const t = setInterval(() => setElapsed(Math.floor((Date.now() - startedAt) / 1000)), 1000);
+    setElapsed(Math.floor((Date.now() - startedAt) / 1000));
+    return () => clearInterval(t);
+  }, [running, startedAt]);
 
   /**
    * Validate before submitting, mirroring the operator's own rules.
@@ -118,7 +148,11 @@ export function MevShield() {
       });
       setJobId(id);
       toast.info("Duel running", {
-        description: "Two lanes across several Sepolia blocks — this takes a minute.",
+        description:
+          "Two on-chain lanes across several Sepolia blocks. Private routing waits for " +
+          "inclusion rather than broadcasting, so this usually takes 2–5 minutes. The " +
+          "stages below show where it is; the result lands here when both lanes finish.",
+        duration: 10_000,
       });
     } catch (e) {
       toast.error("Could not start the duel", {
@@ -141,7 +175,7 @@ export function MevShield() {
   }, [finished, qc]);
 
   return (
-    <div className="mx-auto w-full min-w-0 max-w-6xl space-y-4 overflow-x-hidden p-4 md:p-6">
+    <div className="mx-auto w-full max-w-6xl space-y-4 p-4 md:p-6">
       {/* ─── the claim ─────────────────────────────────────────────────── */}
       <div className="space-y-1">
         <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
@@ -295,6 +329,26 @@ export function MevShield() {
             loss grow.
           </p>
 
+          {running && (
+            <div className="rounded-md border border-warning/40 bg-warning/5 px-3 py-2 space-y-1">
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-[10px] uppercase tracking-widest text-warning">
+                  duel in flight
+                </span>
+                <span className="font-mono text-xs tabular-nums text-warning">
+                  {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}
+                </span>
+              </div>
+              <p className="text-[10px] leading-snug text-muted-foreground">
+                Two on-chain lanes across several Sepolia blocks. The private lane does not
+                broadcast — it is offered to builders and waits for inclusion, which we have
+                measured between 12s and 233s. <strong className="text-foreground">Typically
+                2–5 minutes.</strong> Leaving this page does not cancel it; the result is
+                persisted and appears below.
+              </p>
+            </div>
+          )}
+
           {job?.steps?.map((s, i) => (
             <div key={i} className="flex items-center gap-2 text-[11px]">
               <span
@@ -311,8 +365,6 @@ export function MevShield() {
           ))}
         </CardContent>
       </Card>
-
-      <ExtractionCurve amountIn={amountIn} slippageBps={slippageBps} />
 
       {/* ─── the A/B ───────────────────────────────────────────────────── */}
       <div className="grid gap-3 md:grid-cols-2">
@@ -339,9 +391,11 @@ export function MevShield() {
       {/* ─── leaderboard ───────────────────────────────────────────────── */}
       <Card>
         <PanelHeader title="Every duel, persisted" bullet="default" />
-        <CardContent className="p-0">
+        <CardContent className="min-w-0 p-0">
+          {/* Without `min-w-0` the scroll container sizes to the table instead of
+              the card, so the page scrolls sideways rather than the table. */}
           <div className="min-w-0 overflow-x-auto">
-            <table className="w-full text-xs">
+            <table className="w-full min-w-[34rem] text-xs">
               <thead>
                 <tr className="border-b border-border text-[10px] uppercase tracking-wider text-muted-foreground">
                   <th className="px-3 py-2 text-left font-normal">When</th>
@@ -435,30 +489,25 @@ export function MevShield() {
                 ],
               ] as Array<[string, string, boolean]>
             ).map(([label, value, isAddress]) => (
-              <div key={label} className="flex items-baseline justify-between gap-2">
-                <span className="uppercase tracking-wider text-muted-foreground">{label}</span>
+              <div key={label} className="flex min-w-0 items-baseline justify-between gap-2">
+                <span className="shrink-0 uppercase tracking-wider text-muted-foreground">
+                  {label}
+                </span>
                 {isAddress && value.startsWith("0x") ? (
                   <a
                     href={`${status.explorer}/address/${value}`}
                     target="_blank"
                     rel="noreferrer"
-                    className="truncate font-mono text-muted-foreground hover:text-foreground"
+                    title={value}
+                    className="min-w-0 truncate font-mono text-muted-foreground hover:text-foreground"
                   >
                     {value}
                   </a>
                 ) : (
-                  <span className="truncate font-mono text-muted-foreground">{value}</span>
+                  <span className="min-w-0 truncate font-mono text-muted-foreground">{value}</span>
                 )}
               </div>
             ))}
-            {chains?.privateCapable?.length ? (
-              <p className="col-span-full mt-2 text-muted-foreground">
-                KeeperHub offers private routing on {chains.privateCapable.length} of{" "}
-                {chains.chains.length} supported chains — {chains.privateCapable.join(", ")}. Sepolia
-                being one of them is why this runs where it does: the feature under test genuinely
-                exists here, rather than being approximated on a testnet that lacks it.
-              </p>
-            ) : null}
             <p className="col-span-full mt-2 text-muted-foreground">{status.note}</p>
           </CardContent>
         </Card>

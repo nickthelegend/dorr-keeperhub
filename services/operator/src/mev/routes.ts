@@ -12,7 +12,7 @@ import { sepolia } from "viem/chains";
 import { env } from "../env.js";
 import { completeJob, createJob, failJob, jobStep } from "../jobs.js";
 import { POOL_ABI } from "./artifacts.js";
-import { runDuel } from "./duel.js";
+import { runDuel, type DuelStage } from "./duel.js";
 import * as kh from "./keeperhub.js";
 import { getDuel, leaderboard, listDuels } from "./store.js";
 import { observerStatus, subscribe, type FeedEvent } from "./observer.js";
@@ -34,6 +34,8 @@ const configured = () => Boolean(env.mev.pool && env.keeperhub.apiKey);
  * than re-enabling its button and walking into a 409.
  */
 let running = false;
+let runningSince: string | null = null;
+let runningJobId: string | null = null;
 
 /** Lab configuration and live pool state. */
 mev.get("/mev/status", async (c) => {
@@ -76,6 +78,21 @@ mev.get("/mev/status", async (c) => {
       trader: env.keeperhub.orgWallet || null,
       privateLaneReady: Boolean(env.keeperhub.apiKey && env.keeperhub.orgWallet),
       duelRunning: running,
+      /**
+       * When the in-flight duel started, so a client that reloads mid-run shows
+       * the real elapsed time instead of restarting its own stopwatch. A timer
+       * that resets on refresh reads as "13 seconds in" when the duel is four
+       * minutes old — a small lie, in a page whose whole argument is that its
+       * numbers are not.
+       */
+      duelStartedAt: runningSince,
+      /**
+       * The in-flight duel's job id, so a tab that reloads mid-run can
+       * re-attach to the stage list. Without it a reload keeps the elapsed
+       * clock but loses every stage, leaving a timer ticking against no
+       * explanation of what it is waiting for.
+       */
+      duelJobId: runningJobId,
       note:
         "quote token is an 18dp USD stand-in: 1 mUSD := $1, so a base->quote shortfall is already denominated in dollars",
     });
@@ -151,12 +168,54 @@ mev.post("/mev/duel", async (c) => {
   if (running) return bad(c, "a duel is already running — they must not overlap", 409);
 
   const job = createJob("mev-duel", `${amountIn}@${slippageBps}bps`);
-  const step = jobStep(job, `duel: ${amountIn} ${baseForQuote ? "mETH→mUSD" : "mUSD→mETH"} public vs private`);
+  runningSince = new Date().toISOString();
+  runningJobId = job.id;
+  const pair = baseForQuote ? "mETH→mUSD" : "mUSD→mETH";
+  const step = jobStep(job, `duel: ${amountIn} ${pair} public vs private`);
   running = true;
+
+  /**
+   * One job step per stage, so the UI can say which lane is where.
+   *
+   * A duel is minutes of wall clock — two lanes across several blocks, and
+   * private routing waits for inclusion rather than broadcasting. Reported as a
+   * single step it is indistinguishable from a hang, which is exactly where
+   * someone evaluating this gives up and closes the tab.
+   */
+  const STAGE_LABELS: Record<DuelStage, string> = {
+    preparing: "preparing the trading wallet",
+    "public-submitting": "public lane — submitting, visible in the mempool",
+    "public-landed": "public lane — landed",
+    "private-submitting": "private lane — offered to builders, never broadcast",
+    "private-landed": "private lane — landed",
+    measuring: "measuring both lanes",
+  };
+  let open: { step: ReturnType<typeof jobStep>; detail?: string } | undefined;
+  const closeOpen = () => {
+    open?.step.done(open.detail ? { detail: open.detail } : undefined);
+    open = undefined;
+  };
 
   void (async () => {
     try {
-      const result = await runDuel({ amountIn, slippageBps, baseForQuote });
+      const result = await runDuel({
+        amountIn,
+        slippageBps,
+        baseForQuote,
+        onStage: (stage, detail) => {
+          // Exactly one row pulses at a time: the arriving stage's detail
+          // describes the one that just finished, so it closes that row and
+          // opens the next.
+          if (detail && open) {
+            open.detail = detail;
+            closeOpen();
+            return;
+          }
+          closeOpen();
+          open = { step: jobStep(job, STAGE_LABELS[stage]) };
+        },
+      });
+      closeOpen();
       step.done({
         detail:
           `public $${(result.public?.shortfallUsd ?? 0).toFixed(2)} lost · ` +
@@ -167,10 +226,14 @@ mev.post("/mev/duel", async (c) => {
       completeJob(job);
     } catch (e) {
       const msg = String(e instanceof Error ? e.message : e).slice(0, 300);
+      open?.step.fail(msg);
+      open = undefined;
       step.fail(msg);
       failJob(job, msg);
     } finally {
       running = false;
+      runningSince = null;
+      runningJobId = null;
     }
   })();
 
@@ -275,10 +338,20 @@ mev.get("/mev/observer", (c) => c.json(observerStatus()));
  */
 mev.get("/mev/extraction", async (c) => {
   if (!env.mev.pool) return bad(c, "MEV lab not deployed", 400);
-  const amountIn = c.req.query("amountIn") ?? "10";
+  const amountIn = (c.req.query("amountIn") ?? "10").trim();
   const size = Number(amountIn);
   if (!Number.isFinite(size) || size <= 0) {
     return bad(c, "amountIn must be a positive number of tokens");
+  }
+  // `Number()` happily parses "1e99" and "0x10"; `parseUnits` does not, and its
+  // rejection surfaced as a 502 with a raw library error in it. Require the
+  // plain-decimal form the token amount actually has to be, and bound it —
+  // nobody can swap more tokens than exist.
+  if (!/^\d+(\.\d+)?$/.test(amountIn)) {
+    return bad(c, "amountIn must be a plain decimal, e.g. 10 or 2.5");
+  }
+  if (size > 1_000_000) {
+    return bad(c, "amountIn is larger than the pool could ever quote — try 1000 or less");
   }
   try {
     return c.json(await extractionCurve(amountIn));

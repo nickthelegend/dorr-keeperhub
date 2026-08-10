@@ -32,7 +32,7 @@ export default function NotFound() {
           </h1>
           <div className="flex items-center gap-3">
             <Link
-              href="/"
+              href="/trade"
               className="rounded-md border border-border px-3 py-1.5 text-xs uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground"
             >
               Trading terminal

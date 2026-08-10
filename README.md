@@ -1,12 +1,21 @@
 <div align="center">
 
-# MEV Shield
+# dorr
 
-**The private lane, measured.**
+**Private trading, and the receipts.**
 
-Run the same swap twice — once through the public mempool, once through KeeperHub's private routing — and price the difference in dollars.
+Two things that both come down to one idea — what you reveal before a trade
+lands is what it costs you.
 
-`Ethereum Sepolia` · `KeeperHub` · real sandwich attacks · real transaction hashes · no wallet required
+**MEV Shield** (`/mev`) runs the same swap twice, once through the public
+mempool and once through KeeperHub's private routing, and prices the difference
+in dollars.
+
+**The perps terminal** (`/`) is a privacy-preserving perpetual futures venue:
+sealed orders, hidden stops, collateral in a vault the operator cannot touch,
+and PnL settled on chain by KeeperHub rather than by us.
+
+`Ethereum Sepolia` · `KeeperHub` · `Chainlink` · real transaction hashes · nothing simulated
 
 </div>
 
@@ -44,11 +53,15 @@ Every one of these is a real Sepolia transaction:
 
 The second one: [victim](https://sepolia.etherscan.io/tx/0xe9ed280bce6c5b64e31bf6f1bc8045e5fbbe64527232e587614c66b48fe8f9cb) · [front-run](https://sepolia.etherscan.io/tx/0x7bc8ec5e7ea657562a158be785bfd9ae7a0272329c8ad79201d846eecd6d184e) · [back-run](https://sepolia.etherscan.io/tx/0x462b9438b38cd15db4a56bb1d8e1d87558a6291505d88d20c122302c956cbff6) · [private](https://sepolia.etherscan.io/tx/0xb373c6edc8787b51bcaafd990a1cadf3c8f328338ce828395c765cae388d7809)
 
-Across every duel run so far: **16 duels, 11 sandwiches landed, $2,336.21 lost to
-the public mempool, $2,006.79 saved by the private lane.** Public-lane
-transactions were caught in the mempool 15 times out of 16; private-lane
-transactions once out of 16 — that one being the very first run, before we
+Across every duel run so far: **18 duels, 13 sandwiches landed, $2,550.90 lost to
+the public mempool, $2,221.48 saved by the private lane.** Public-lane
+transactions were caught in the mempool 17 times out of 18; private-lane
+transactions once out of 18 — that one being the very first run, before we
 discovered private routing was workflow-only.
+
+The leaderboard on `/mev` is the live version of this paragraph, and it counts
+the runs where the searcher *lost* the race too. Those show `$0.00`, and they
+stay in the table.
 
 > **KeeperHub submission transaction:** [`0xc67f71a7…`](https://sepolia.etherscan.io/tx/0xc67f71a7029ab41fb735c62b2358a4588db8e7972744fbadd0f394b707d31bd1) — executed via KeeperHub, gas sponsored, receipt independently verified, block 11459375.
 
@@ -131,6 +144,71 @@ Value is moved, not destroyed — the attacker cannot take more than the victim 
 
 ---
 
+## The perps: an operator that cannot pay itself
+
+The trading terminal at `/` is the other half. Orders are sealed until they
+clear, stops are never published so they cannot be hunted, and matching happens
+off chain — which is the only way any of that privacy works.
+
+That creates an obvious problem, and it is the interesting one: **if the
+operator alone knows what everyone is owed, why would you believe it?**
+
+The answer is that the operator is not allowed to pay you.
+
+| | Who controls it | What stops abuse |
+|---|---|---|
+| Your collateral | `DorrVault` on Sepolia | only the depositor can withdraw; the vault has **no** token-moving admin function |
+| Your balance | the vault | the operator reads `accountOf`, it does not write it |
+| Your PnL | the engine computes, **KeeperHub applies** | `applyPnl` is gated on KeeperHub's wallet and reverts unless the batch sums to zero |
+
+The operator can decide what you are owed. It cannot credit it. `applyPnl` is
+`onlySettlement`, `settlement` is KeeperHub's wallet, and every batch must be
+zero-sum — so the operator cannot mint balance, cannot drain the vault, and
+cannot pay itself, regardless of what its code says. Settlement is routed
+through the **private** mempool, because a settlement batch is a published list
+of who closed what and for how much.
+
+The counterparty on the other side of every delta is an insurance fund which is
+KeeperHub's own vault account, capitalised by KeeperHub signing its own deposit:
+[approve](https://sepolia.etherscan.io/tx/0x4f88775ccc672b769a9f397f43a0d4d73566ef38790049f235b5aac79e79567f) ·
+[deposit 50,000 mUSD](https://sepolia.etherscan.io/tx/0x02fc28bb24df3c6246470dc2e02b4001d2d3865c111408c42079d21addfe5304).
+
+Live settlements — all `applyPnl`, all private-routed, all verified on chain:
+[`0xe25993b6…`](https://sepolia.etherscan.io/tx/0xe25993b654d7593c8231b45582ddf930693f375d787269f6e542ca837ce37ed5) ·
+[`0x8d28d853…`](https://sepolia.etherscan.io/tx/0x8d28d85382741d8cdebf7e3463397375519e96040d6b334d3341698d93ca8489) ·
+[`0x77fee2ca…`](https://sepolia.etherscan.io/tx/0x77fee2cabb77c367bb50e25fc480f7864e082f65f59cf77208d4499f0c4bdb70)
+— the last one unattended: three positions closed, the keeper batched 2.70 mUSD
+five minutes later and pushed it on chain with nobody watching.
+
+**Settlement is idempotent, and it is idempotent for a reason.** The obvious
+design decrements a local counter when a batch lands. That works until a batch
+lands the operator did not observe — a retry that timed out here but succeeded
+there, a restart mid-flight, someone firing the workflow from KeeperHub's own
+UI. Then the counter still shows the PnL as owed and the next run pays it
+twice. We know because it happened: during development the vault paid
+−1.0002 mUSD against −0.5001 owed. So what has been paid is read from the
+vault's own `PnlApplied` events and what is owed is the difference. The next
+run proposed **+0.5001** — the correction — and the run after that proposed
+nothing. Settle twice and the second batch is empty because the arithmetic says
+so, not because we remembered correctly.
+
+The terminal shows both numbers side by side, always: *settled on chain* and
+*awaiting settlement*. One of them is the vault's word and one is ours, and you
+should never have to guess which.
+
+**Prices are Chainlink**, read on chain per market. A feed that cannot be read
+disables its market rather than quoting a stale number, because a perp priced
+off a guess is worse than a perp that refuses to quote.
+
+```bash
+bun run services/operator/src/scripts/prove-deposit.ts 500
+```
+
+Mints mUSD, deposits it, and asserts the operator's balance moved to match the
+vault's — failing loudly if the two halves ever come apart.
+
+---
+
 ## What we learned about KeeperHub
 
 Findings from building this, all verified against the live API. They are written down because each one cost real time.
@@ -157,6 +235,27 @@ a class of permission bug. It is not in the obvious place in the API surface.
 **`abi` and `functionArgs` must be JSON *strings*, not arrays.** Passing arrays is accepted without complaint and fails much later and much less legibly — an array `abi` is dropped and the API falls back to explorer auto-fetch (*"contract may not be verified"* — misleading, since you supplied one), and an array under `args` encodes as zero arguments (*"types/values length mismatch, count=0"* — reads like a bad ABI). Same trap on workflow nodes, where the symptom is `no matching fragment`.
 
 **`go-live` returns 200 without enabling anything.** Use `PATCH /api/workflows/{id}` with `{enabled: true}`; otherwise the webhook answers `410 Workflow is disabled`.
+
+**A write node with no `integrationId` fails as "exceeded max retries."** The
+node needs the id of the web3 integration that signs for it (`GET
+/api/integrations`). Omit it and there is nobody to sign as — but the error
+names the retry budget, not the missing signer, so it reads like a network
+problem. The same generic string also covers a rejected ABI: KeeperHub wants
+Foundry's shape, `internalType` included, and quietly refuses the terser
+viem-style entry.
+
+**One wallet sends one transaction at a time.** Private routing holds that lock
+for as long as inclusion takes — measured here between 12s and 233s — so a
+settlement fired while the MEV lab is mid-duel loses the race:
+
+```
+Wallet is saturated: could not acquire the nonce lock for 0x7a4f…:11155111 after 120s.
+```
+
+That is contention, not failure, and the batch is still owed — so
+[`settlement.ts`](services/operator/src/settlement.ts) backs off and asks again
+rather than reporting a settlement that did not happen. The structural fix is a
+second wallet, which is what KeeperHub's own error message recommends.
 
 **Relayed transactions do not target your contract.** KeeperHub executes through a relayer, wrapping your call as `relayer(account, target, value, bytes(signature ++ innerCalldata))`. A searcher matching on `tx.to == pool` sees nothing — which would make every relayed trade *look* private. [`decodeSwapFromCalldata`](services/operator/src/mev/searcher.ts) scans for the selector and decodes the static words that follow, and is pinned against real relayed transactions in [`mev-searcher.test.ts`](services/operator/test/mev-searcher.test.ts).
 
@@ -197,6 +296,30 @@ flowchart LR
 | Duel database (SQLite) | [`services/operator/src/mev/db.ts`](services/operator/src/mev/db.ts) |
 | UI | [`apps/web/components/mev/`](apps/web/components/mev/) → `/mev` |
 
+**The perps**
+
+```mermaid
+flowchart LR
+  T[Trader] -->|deposit mUSD| V[(DorrVault<br/>Sepolia)]
+  T -->|sealed order| ENG[Matching engine<br/>off chain, private]
+  CL[Chainlink feeds] --> ENG
+  ENG -->|proposed zero-sum batch| KH[KeeperHub<br/>settlement wallet]
+  KH -->|applyPnl, private routing| V
+  V -->|accountOf / PnlApplied| ENG
+  ENG -.->|cannot write| V
+```
+
+| Piece | Where |
+|---|---|
+| Collateral vault (`applyPnl` is `onlySettlement`) | [`contracts/src/DorrVault.sol`](contracts/src/DorrVault.sol) |
+| Chain reads + settled-PnL reconciliation | [`services/operator/src/chain.ts`](services/operator/src/chain.ts) |
+| Settlement through KeeperHub | [`services/operator/src/settlement.ts`](services/operator/src/settlement.ts) |
+| Chainlink index prices | [`services/operator/src/oracle.ts`](services/operator/src/oracle.ts) |
+| vAMM, funding, liquidation, hidden stops | [`services/operator/src/trading.ts`](services/operator/src/trading.ts) |
+| Sealed-bid batch clearing | [`services/operator/src/sealbid.ts`](services/operator/src/sealbid.ts) |
+| One-time settlement wiring | [`services/operator/src/scripts/provision-settlement.ts`](services/operator/src/scripts/provision-settlement.ts) |
+| UI | [`apps/web/components/trading/`](apps/web/components/trading/) → `/` |
+
 **Deployed on Sepolia**
 
 | Contract | Address |
@@ -205,6 +328,15 @@ flowchart LR
 | mETH (faucet) | [`0x67427ce5d1e36f701d91d52917834faf1bd57f24`](https://sepolia.etherscan.io/address/0x67427ce5d1e36f701d91d52917834faf1bd57f24) |
 | mUSD (faucet) | [`0xb3670c1663cdc5ef6bd1dbec1770323bfb86a910`](https://sepolia.etherscan.io/address/0xb3670c1663cdc5ef6bd1dbec1770323bfb86a910) |
 | Searcher (adversary) | [`0x937749eFFbB83FDC704417Aab2D5C5C4ba0CCdf7`](https://sepolia.etherscan.io/address/0x937749eFFbB83FDC704417Aab2D5C5C4ba0CCdf7) |
+| DorrVault (perps collateral) | [`0xff236fb4890e4fd2916c4a910810810a1d120ca5`](https://sepolia.etherscan.io/address/0xff236fb4890e4fd2916c4a910810810a1d120ca5) |
+| Settlement + insurance fund (KeeperHub) | [`0x7a4fdd120a17e5390d87565e74a3fbf80df05fc1`](https://sepolia.etherscan.io/address/0x7a4fdd120a17e5390d87565e74a3fbf80df05fc1) |
+
+The perps take margin in the same `mUSD` the lab prices, so one faucet funds
+both halves of the app. Index prices come from Chainlink's Sepolia aggregators —
+ETH/USD [`0x694AA176…`](https://sepolia.etherscan.io/address/0x694AA1769357215DE4FAC081bf1f309aDC325306),
+BTC/USD [`0x1b44F351…`](https://sepolia.etherscan.io/address/0x1b44F3514812d835EB1BDB0acB33d3fA3351Ee43),
+LINK/USD [`0xc59E3633…`](https://sepolia.etherscan.io/address/0xc59E3633BAAC79493d908e63626716e204A45EdF),
+DAI/USD [`0x14866185…`](https://sepolia.etherscan.io/address/0x14866185B1962B63C3Ea9E03Bc1da838bab34C19).
 
 Both tokens have a permissionless `mint` so anyone can reproduce the experiment. `mUSD` is an 18-decimal USD stand-in — 1 mUSD := $1 — so a base→quote shortfall is already denominated in dollars, with no oracle in the trust path.
 
@@ -250,6 +382,18 @@ Between runs, `mev-rebalance.ts` arbitrages the pool back to its target price;
 every duel leaves it slightly off, since the searcher's two legs don't cancel
 against the 30bp fee.
 
+For the perps, wire settlement once — this capitalises the insurance fund by
+having KeeperHub sign its own deposit, and hands it the vault's settlement
+authority:
+
+```bash
+cd services/operator && bun run src/scripts/provision-settlement.ts 50000
+```
+
+Then trade at `/`. Connect a wallet on Sepolia, press **Get mUSD** (a real
+permissionless `mint`), deposit, and open a position. Realized PnL appears as
+*awaiting settlement* and the keeper batches it on chain every five minutes.
+
 ## Honest limitations
 
 - **The searcher is ours.** No independent searcher fleet hunts a bespoke pool on a testnet, so we run the adversary ourselves. Its attacks are real signed transactions paid for with its own ETH, racing for block position on priority fee — but it is not evidence about how crowded mainnet MEV is.
@@ -259,16 +403,25 @@ against the 30bp fee.
 - **The searcher can run out of gas.** It bids 25× the victim's priority fee and pays from its own wallet, so a long session drains it — after which it stops landing attacks and the public lane starts reporting $0. That is the most flattering way this lab can be wrong, so `/mev/status` reports the searcher's balance and the UI warns when it can no longer attack. Top it up with `mev-deploy.ts`, which is idempotent.
 - **The scheduled agent is private-lane-only.** Driving a full two-lane duel on a cron would need KeeperHub to call this operator inbound, and its outbound-webhook action requires a paid plan (`402`). The agent therefore performs the private swap itself — no inbound reachability needed — so the unattended evidence covers privacy, while the public-lane comparison is run from the app.
 - **Private-lane gas is not sponsored**, so a full accounting for small trades should net gas against MEV saved. The UI does not currently do that subtraction.
+- **The perps' matching engine is trusted.** Orders are sealed from other traders and stops are hidden from everyone, but the operator sees the book — that is what makes the matching possible. What the operator provably *cannot* do is touch collateral or credit PnL: both are gated on contracts it does not control. Making the matching itself verifiable would need a proof system, which this does not have.
+- **Settlement and the MEV lab share one KeeperHub wallet**, so they contend for its nonce lock. Settlement backs off and retries, which is correct but slow under load; the real fix is a second wallet.
+- **The insurance fund is capitalised from a testnet faucet.** It is real capital in the real vault and the zero-sum invariant is genuinely enforced, but 50,000 mUSD is not a solvency argument for a live venue.
 
 ---
 
 ## Provenance
 
-Started life inside `dorr`, a privacy-preserving perpetuals venue on Flare. MEV
-Shield kept that project's operator scaffolding, job system and design language,
-and dropped everything else: the Flare contracts, the FXRP vault, the FTSO
-oracle, the perps engine, the Cardano/Midnight subsystem, and the simulated
-attack lab. What is left targets one chain, one relayer, and one claim.
+`dorr` began as a privacy-preserving perpetuals venue on Flare, margined in FXRP
+and priced by the FTSO. Both halves now run on Ethereum Sepolia through
+KeeperHub: the oracle is Chainlink, the collateral is mUSD, and the settlement
+authority the perps always needed is KeeperHub's wallet rather than a relayer of
+our own. The Cardano/Midnight subsystem is gone entirely.
+
+What remains is on one chain, and every headline number has a transaction hash
+behind it. The one thing that is *computed* rather than measured — the Attack
+Lab, which solves a sandwich against the live vAMM curve without sending
+anything — is labelled as a model wherever it appears, and points at the duel
+that measures the same attack for real.
 
 Inspired by Nucast's [Anti-Front-Running-ZKPerps-on-Cardano-w-MidnightZK](https://github.com/nucastio/Anti-Front-Running-ZKPerps-on-Cardano-w-MidnightZK).
 

@@ -19,7 +19,8 @@
     "dotenv": "^16.4.7",
     "hono": "^4.7.0",
     "tlock-js": "^0.9.0",
-    "viem": "^2.55.11"
+    "viem": "^2.55.11",
+    "@dorr/engine": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",

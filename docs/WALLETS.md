@@ -1,48 +1,85 @@
-# 👛 Wallets & test setup
+# Wallets & test setup
 
 ## TL;DR
 
-dorr's frontend connects to **any CIP-30 Cardano wallet, set to Preprod**. Use **Lace** (the Cardano + Midnight reference wallet) or **Eternl** (smoothest for testnet dev). You do **not** need a Midnight browser wallet — see [below](#do-i-need-a-midnight-wallet).
+Any EVM wallet on **Ethereum Sepolia** (chain `11155111`). MetaMask, Rabby,
+Frame — discovery is EIP-6963, so anything that announces itself works.
 
-## Supported wallets
+You need two things:
 
-The connect flow uses Mesh (`BrowserWallet.getAvailableWallets()`), so **anything CIP-30 that's installed shows up**. Each trade action is signed with the wallet's `signData` (CIP-30 data signature).
+1. **SepoliaETH for gas.** From a public faucet — [sepoliafaucet.com](https://sepoliafaucet.com),
+   [Alchemy's](https://sepoliafaucet.com), or [Google's](https://cloud.google.com/application/web3/faucet/ethereum/sepolia).
+   This is the one part nobody can do for you.
+2. **mUSD for margin.** Press **Get mUSD** in the collateral panel. That is a
+   real transaction against a permissionless `mint` — you sign it, and you get
+   10,000 mUSD.
 
-| Wallet | Recommendation | Notes |
-|--------|----------------|-------|
-| **Lace** | ⭐ primary | IOG's wallet; the one that also supports **Midnight**, so it matches dorr's story end-to-end. Clean Preprod switch, reliable `signData`. |
-| **Eternl** | ⭐ best for dev/testing | Fastest testnet workflow, easy network toggle, great dApp connector, hardware-wallet support. My pick for iterating. |
-| **Nami** | ✅ | Now Lace-powered; CIP-30 + `signData` work. |
-| **Typhon** | ✅ | Full CIP-30, `signData`, good Plutus support. |
-| **Vespr** | ✅ | CIP-30; mobile-first but has an extension. |
-| **NuFi / Begin / Gero / Flint / Yoroi** | ✅ (varies) | Any CIP-30 with `signData`. Most work; a few older ones have quirky `signData`. |
+Then **Deposit** into the vault and trade.
 
-If nothing is installed, the connect dropdown shows install links — the app never crashes wallet-less.
+---
 
-## Setup in ~2 minutes
+## No wallet? You can still see everything that matters
 
-1. **Install** Lace or Eternl (browser extension).
-2. **Switch to Preprod.** Lace: Settings → Network → Preprod. Eternl: the network dropdown → Preprod.
-3. **Get test ADA** (for tx fees — deposits/withdrawals are real preprod txs):
-   → https://docs.cardano.org/cardano-testnets/tools/faucet — pick **Preprod**, paste your wallet address, request. A couple of tADA is plenty.
-4. **Open dorr** (`http://localhost:3000`), click **Connect**, pick your wallet, approve.
-5. **Get dUSD** — hit the in-app **faucet** (mints test dUSD straight to your address; a real preprod mint tx).
-6. **Deposit** dUSD to the vault (your wallet signs + submits a real tx), then **trade**.
+The whole read side is open, and it's most of the argument:
 
-## Do I need a Midnight wallet?
+- **`/mev`** works with no wallet at all — including running a live duel, which
+  executes from KeeperHub's own wallet.
+- **`/`** shows live Chainlink prices, the public order flow as commitment
+  hashes, on-chain settlements with Etherscan links, and vault solvency.
+- **Spectator mode** on the terminal follows a real funded account, so you can
+  watch positions and settlement without connecting anything.
 
-**No — not in v1.** dorr's Midnight ZK proving runs **server-side** in the operator (it holds the Midnight wallet and drives the proof server). Your browser wallet only ever signs **Cardano** things: the vault deposit, the trade-authorization signatures, and the withdrawal.
+---
 
-That's why **any CIP-30 Cardano wallet works**, and why **Lace is *recommended* but not *required*** — Lace is the natural choice because it's also the Midnight wallet, so it fits a future v2 where the trader proves in-browser. Today the operator proves on your behalf (it already sees your order to execute it, so no extra trust is given up).
+## Wrong network
 
-## No wallet? You can still demo
+The app detects it and offers to switch. Accepting adds Sepolia with the right
+chain ID, RPC and explorer if your wallet doesn't have it.
 
-- **Live prices + charts** for all 5 markets work with no wallet.
-- The **A/B sandwich showcase** (the money shot) runs with no wallet — it's a pure demonstration.
-- For a full trade without a real wallet, the operator has a `/demo/seed` endpoint (instant off-chain margin) — handy for local walkthroughs, though real deposits/settlement need a connected wallet.
+If you decline, value-moving actions stay disabled rather than failing halfway
+through — a transaction sent to the wrong chain is worse than one not sent.
 
-## Gotchas
+---
 
-- **Wrong network** is the #1 issue — the wallet **must be on Preprod**, not Mainnet or Preview. Symptoms: address starts with `addr1…` (mainnet) instead of `addr_test1…`.
-- **No tADA** → the deposit tx fails at fee selection. Fund from the faucet first.
-- **`signData` prompts** — with secure mode (`DORR_AUTH=1`) the wallet asks you to sign each trade action. That's the point: only you can place your trade. In the default demo mode it won't prompt.
+## What you'll be asked to sign
+
+| Action | Signature | Costs gas |
+|---|---|---|
+| Get mUSD | `mint` on the token | yes |
+| Deposit | `approve`, then `deposit` | yes, twice the first time |
+| Withdraw | `withdraw` on the vault | yes |
+| Commit / execute / close | EIP-191 `personal_sign` when `DORR_AUTH=1` | no |
+
+Only the first three touch the chain. Trading itself is off-chain matching, so
+it's a signature at most — no gas, no confirmation wait.
+
+The approve is scoped to the amount you're depositing, not unlimited.
+
+---
+
+## Getting your collateral back
+
+`withdraw` on `DorrVault`, signed by you. Only the depositor can withdraw, and
+the vault has no admin function that can move tokens — so this works whether or
+not the operator is running, and whether or not we cooperate.
+
+If you have unsettled PnL, settle it first (the keeper does this every five
+minutes on its own) so the vault balance reflects what you're actually owed.
+
+---
+
+## Troubleshooting
+
+**"You rejected the request in your wallet."** You hit cancel. Nothing happened.
+
+**Deposit fails with an allowance error.** The approve didn't land before the
+deposit. Retry — the panel checks the current allowance and skips the approve if
+it's already sufficient.
+
+**Balance reads 0 after depositing.** The operator caches vault reads for a few
+seconds. The panel forces a re-read after a confirmed deposit; if you're
+impatient, `POST /chain/sync/:address`.
+
+**The wallet connects but panels still say "connect a wallet."** Fixed — the app
+shares one wallet context across every panel. If you see it, the page is stale;
+reload.

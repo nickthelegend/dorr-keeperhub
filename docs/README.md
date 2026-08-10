@@ -1,48 +1,56 @@
 <div align="center">
 
-# 📚 dorr docs
+# dorr docs
 
-**Perps you can't front-run.** Private order flow on Cardano + Midnight.
+**Private trading, and the receipts.**
+
+`Ethereum Sepolia` · `KeeperHub` · `Chainlink`
 
 </div>
 
-Start at the [project README](../README.md) for the pitch and quickstart. These docs go deeper.
+---
 
-| Doc | What's inside |
-|-----|---------------|
-| 🏗️ [ARCHITECTURE](./ARCHITECTURE.md) | The five layers, the trade lifecycle (sequence diagram), the privacy boundary, and the trust model — with diagrams. |
-| ⚡ [FEATURES](./FEATURES.md) | Private limit orders, hidden stop-loss/take-profit (anti stop-hunting), partial close, add/remove margin, slippage guard. |
-| 🔗 [MIDNIGHT_CARDANO](./MIDNIGHT_CARDANO.md) | Exactly how the two ledgers are linked (shared digest, two-way hash reference). |
-| 👛 [WALLETS](./WALLETS.md) | Which wallets to test with, Preprod setup, funding, and the "do I need a Midnight wallet?" answer. |
-| 🔌 [API](./API.md) | Every operator endpoint, the contracts, and the on-chain artifacts. |
-| 🔒 [SECURITY](./SECURITY.md) | Wallet-signature auth, the privacy/MEV model, and an honest scope statement. |
-| 🧪 [TESTING](./TESTING.md) | The 47-test suite + the assertive on-chain E2E, and how to run each. |
-| 🎬 [DEMO](../DEMO.md) | The 3-minute stage script. |
-| 📐 [DESIGN](../DESIGN.md) | The original decision log that shaped the build. |
-| 📓 [RUNBOOK](../RUNBOOK.md) | Ops: run it, ports, live tx evidence. |
-
-## 30-second mental model
-
-```
-You sign an order  ──▶  it becomes a HASH on Midnight (ZK proof of validity)
-                         the public sees only the hash — no side/size/price
-                         ↓
-                        the operator executes it on an oracle-priced vAMM
-                         ↓
-                        the settlement digest is ANCHORED on Cardano L1
-                         (auditable, still reveals nothing private)
-```
-
-The whole point: **a bot can't front-run what it can't see.** [Proven on-chain](./TESTING.md#on-chain-e2e).
-
-## Status at a glance
+Start with the [project README](../README.md) — it carries the claim and the
+transaction hashes behind it. These are the details underneath.
 
 | | |
 |---|---|
-| Markets | ADA · BTC · ETH · SOL · DOGE (vs dUSD), up to 20× |
-| Prices | Pyth Hermes (off-chain) |
-| Privacy | Midnight ZK order commitments (real proofs) |
-| Settlement audit | Cardano preprod L1 anchor (inline datum) |
-| Auth | CIP-30 wallet signatures (proven round-trip) |
-| Tests | 47 green + assertive on-chain E2E (11 txs, all confirmed) |
-| Trust (v1) | trusted operator/sequencer — privacy + audit are trustless, settlement is not yet |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | how the two subsystems fit together, and what the operator can and cannot change |
+| [FEATURES.md](FEATURES.md) | everything that's built, on both halves |
+| [API.md](API.md) | every operator endpoint |
+| [SECURITY.md](SECURITY.md) | the trust model, stated precisely — including where it *isn't* trustless |
+| [TESTING.md](TESTING.md) | the 67 tests, and the scripts that check the live system rather than a mock |
+| [WALLETS.md](WALLETS.md) | wallet setup, and what you can see without one |
+| [keeperhub-onboarding-friction.md](keeperhub-onboarding-friction.md) | a friction log from building on KeeperHub |
+
+---
+
+## The shortest version
+
+What you reveal before a trade lands is what it costs you.
+
+**MEV Shield** (`/mev`) proves the cost. The same swap runs twice — once through
+the public mempool, once through KeeperHub's private routing — and the gap
+between quoted and received is the invoice, in dollars, with transaction hashes.
+
+**The perps** (`/`) build a venue where you never enter the mempool. Orders are
+commitments, stops are never published, and the matching is off chain.
+
+That last part creates the obvious problem: if the operator alone knows what
+everyone is owed, why believe it? Because the operator is not allowed to pay
+you. `applyPnl` on the vault is gated on KeeperHub's wallet and every batch must
+sum to zero — so it can compute what you're owed and provably cannot credit it,
+mint it, or pay itself.
+
+## Run it
+
+```bash
+bun install && bun run --cwd services/operator start
+```
+
+```bash
+bun run --cwd apps/web dev
+```
+
+Full setup, including KeeperHub credentials and one-time provisioning, is in the
+[RUNBOOK](../RUNBOOK.md). The demo script is in [DEMO.md](../DEMO.md).

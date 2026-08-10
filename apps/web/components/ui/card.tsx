@@ -20,7 +20,10 @@ function CardHeader({ className, ...props }: React.ComponentProps<"div">) {
     <div
       data-slot="card-header"
       className={cn(
-        "@container/card-header h-9 grid auto-rows-min grid-rows-[auto_auto] items-start gap-1.5 pl-1 pr-1.5 has-data-[slot=card-action]:grid-cols-[1fr_auto] [.border-b]:pb-6",
+        // `1fr` is `minmax(auto, 1fr)`, so the title column refuses to shrink below its
+        // own min-content width and pushes the action past the viewport on a narrow
+        // screen. `minmax(0, 1fr)` lets it shrink; `min-w-0` lets its children do the same.
+        "@container/card-header h-9 grid auto-rows-min grid-rows-[auto_auto] items-start gap-1.5 pl-1 pr-1.5 min-w-0 has-data-[slot=card-action]:grid-cols-[minmax(0,1fr)_auto] [.border-b]:pb-6",
         className,
       )}
       {...props}
@@ -29,7 +32,7 @@ function CardHeader({ className, ...props }: React.ComponentProps<"div">) {
 }
 
 function CardTitle({ className, ...props }: React.ComponentProps<"div">) {
-  return <div data-slot="card-title" className={cn("leading-none font-medium text-sm", className)} {...props} />
+  return <div data-slot="card-title" className={cn("leading-none font-medium text-sm min-w-0", className)} {...props} />
 }
 
 function CardDescription({ className, ...props }: React.ComponentProps<"div">) {
