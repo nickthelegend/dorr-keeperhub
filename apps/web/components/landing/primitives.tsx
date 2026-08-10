@@ -86,14 +86,55 @@ export function SecondaryCta({ label, href }: { label: string; href: string }) {
   );
 }
 
-export function SectionEyebrow({ label, tag }: { label: string; tag?: string }) {
+/**
+ * The opening of every section below the fold.
+ *
+ * Each one is its own hero rather than a heading dropped on top of a grid: a
+ * numbered rule, the claim at display size, and a single paragraph that has to
+ * earn the diagram underneath it. The number matters more than it looks — the
+ * page is one argument in four moves, and a reader who arrives on a deep link
+ * from the nav should be able to tell where in that argument they landed.
+ */
+export function SectionHero({
+  index,
+  eyebrow,
+  title,
+  lede,
+  align = "left",
+}: {
+  index: string;
+  eyebrow: string;
+  title: React.ReactNode;
+  lede?: React.ReactNode;
+  align?: "left" | "center";
+}) {
   return (
-    <div className="flex items-center gap-2 text-xs">
-      <span className="size-1.5 rounded-full bg-white" />
-      <span className="font-medium text-white/70">{label}</span>
-      {tag && (
-        <span className="rounded-full border border-white/10 px-2 py-0.5 text-white/50">{tag}</span>
+    <header className={cn("max-w-3xl", align === "center" && "mx-auto text-center")}>
+      <div
+        className={cn(
+          "flex items-center gap-3 font-mono text-[10px] uppercase tracking-[0.18em]",
+          align === "center" && "justify-center",
+        )}
+      >
+        <span className="text-white/30">{index}</span>
+        <span aria-hidden="true" className="h-px w-8 bg-white/15" />
+        <span className="text-white/45">{eyebrow}</span>
+      </div>
+
+      <h2 className="mt-5 text-pretty text-[2rem] font-semibold leading-[1.05] tracking-[-0.03em] md:text-[2.9rem]">
+        {title}
+      </h2>
+
+      {lede && (
+        <p
+          className={cn(
+            "mt-5 max-w-xl text-[15px] leading-[1.65] text-white/60",
+            align === "center" && "mx-auto",
+          )}
+        >
+          {lede}
+        </p>
       )}
-    </div>
+    </header>
   );
 }

@@ -28,7 +28,32 @@ export function ProductShot() {
   return (
     <Reveal y={28}>
       <figure className="relative">
-        <div className="relative overflow-hidden rounded-xl border border-white/10 bg-[#0b0d11] shadow-[0_40px_120px_-40px_rgba(0,0,0,0.9)]">
+        {/*
+          The shot sits in its own light. Two lobes of the headline's own blue
+          bleeding out from behind the frame, plus a hairline of it along the
+          top edge where a screen would actually catch it — enough to lift the
+          panel off a near-black page and tie it to the palette, and diffuse
+          enough that it never competes with the screenshot for attention.
+        */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -inset-x-24 -bottom-16 -top-24"
+        >
+          <div
+            className="absolute inset-0 blur-[70px]"
+            style={{
+              background:
+                "radial-gradient(58% 62% at 26% 8%, rgba(0,210,255,0.38), transparent 68%), radial-gradient(52% 58% at 80% 16%, rgba(74,127,193,0.42), transparent 70%), radial-gradient(70% 45% at 50% 100%, rgba(56,189,248,0.28), transparent 72%)",
+            }}
+          />
+        </div>
+
+        <div className="relative overflow-hidden rounded-xl border border-white/10 bg-[#0b0d11] shadow-[0_40px_120px_-40px_rgba(0,0,0,0.9),0_0_0_1px_rgba(56,189,248,0.10),0_24px_90px_-30px_rgba(0,180,255,0.28)]">
+          {/* the light catching the top bezel */}
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-x-0 top-0 z-10 h-px bg-gradient-to-r from-transparent via-sky-300/50 to-transparent"
+          />
           {/* window chrome */}
           <div className="flex items-center gap-2 border-b border-white/[0.07] bg-white/[0.02] px-4 py-2.5">
             <span className="size-2.5 rounded-full bg-[#ff5f57]" />

@@ -1,13 +1,21 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowUpRight, Eye, EyeOff, Menu, X } from "lucide-react";
+import { ArrowUpRight, Menu, X } from "lucide-react";
 import { useReducedMotion } from "framer-motion";
 import { useState } from "react";
 import DorrMark from "@/components/icons/dorr-mark";
 import { ProductShot } from "./product-shot";
-import { Reveal } from "./reveal";
-import { NoiseFilter, PrimaryCta, SecondaryCta, gradientStyle } from "./primitives";
+import { BoundaryScene } from "./scenes/boundary";
+import { LanesScene } from "./scenes/lanes";
+import { SealingScene } from "./scenes/sealing";
+import {
+  NoiseFilter,
+  PrimaryCta,
+  SecondaryCta,
+  SectionHero,
+  gradientStyle,
+} from "./primitives";
 
 /**
  * Section anchors.
@@ -24,7 +32,15 @@ const SECTIONS = [
 
 export function Landing() {
   return (
-    <div className="landing-root relative min-h-screen overflow-x-hidden bg-[#0c0c0c] text-white">
+    /*
+      overflow-x-CLIP, not hidden. `hidden` on one axis forces the other axis to
+      compute as `auto`, which turned this wrapper into a scroll container that
+      has nothing to scroll — and because the app sets `overscroll-none`
+      globally, the browser refused to chain the wheel past it to <html>. The
+      page simply did not scroll. `clip` does the same visual job without ever
+      creating a scroll container, so the wheel reaches the document.
+    */
+    <div className="landing-root relative min-h-screen overflow-x-clip bg-[#0c0c0c] text-white">
       <NoiseFilter />
       <Backdrop />
 
@@ -214,7 +230,21 @@ function Hero() {
 function Terminal() {
   return (
     <section id="terminal" className="mx-auto max-w-6xl scroll-mt-24 px-6 py-10 md:py-16">
-      <ProductShot />
+      {/*
+        A heading here, because "The terminal" is a nav destination and landing
+        on a bare screenshot tells a deep-linked reader nothing about where they
+        are. Centred, since the shot below it is centred and symmetrical.
+      */}
+      <SectionHero
+        index="01"
+        eyebrow="The terminal"
+        title="It is already running."
+        lede="Live on Sepolia against Chainlink marks, with real collateral in a real vault. No signup, and no wallet needed to watch."
+        align="center"
+      />
+      <div className="mt-12">
+        <ProductShot />
+      </div>
     </section>
   );
 }
@@ -222,100 +252,39 @@ function Terminal() {
 function Sealed() {
   return (
     <section id="sealed" className="mx-auto max-w-6xl scroll-mt-24 px-6 py-20 md:py-28">
-      {/*
-        items-start, or the two cards stretch to the height of the prose column
-        beside them and each ends in a couple of hundred pixels of empty panel.
-        They still match each other — that is their own grid's doing — which is
-        the only alignment the comparison actually needs.
-      */}
-      <div className="grid gap-12 md:grid-cols-12 md:items-start md:gap-10">
-        <div className="md:col-span-5">
-          <h2 className="text-pretty text-[2rem] font-semibold leading-[1.05] tracking-[-0.03em] md:text-[2.75rem]">
+      <SectionHero
+        index="02"
+        eyebrow="How it hides"
+        title={
+          <>
             There is nothing
             <br />
             to front-run.
-          </h2>
-          <p className="mt-6 max-w-md text-[15px] leading-[1.65] text-white/60">
-            Matching happens off chain, so an order never sits in a mempool
-            waiting to be read. What gets published is a commitment — the hash
-            of your side, size, price, leverage and a 128-bit nonce. Seal it to
-            a future drand round and not even we can open it early.
-          </p>
+          </>
+        }
+        lede="Matching happens off chain, so an order never sits in a mempool waiting to be read. What gets published is a commitment — the hash of your side, size, price, leverage and a 128-bit nonce."
+      />
 
-          <dl className="mt-8 space-y-3 border-t border-white/10 pt-8">
-            {[
-              ["Stops", "Never published. A stop you can see is a stop you can hunt."],
-              [
-                "Epochs",
-                "Sealed bids clear at one uniform price, so cutting the queue buys nothing.",
-              ],
-              [
-                "Disclosure",
-                "Open a past order to an auditor of your choosing, and to nobody else.",
-              ],
-            ].map(([term, def]) => (
-              <div key={term} className="flex gap-4">
-                <dt className="w-24 shrink-0 font-mono text-[11px] uppercase tracking-wider text-white/40">
-                  {term}
-                </dt>
-                <dd className="flex-1 text-[13px] leading-[1.6] text-white/55">{def}</dd>
-              </div>
-            ))}
-          </dl>
-        </div>
-
-        {/*
-          The comparison is the second place motion earns its keep: two cards
-          for the same order at the same instant, one legible and one not.
-        */}
-        <div className="grid gap-4 md:col-span-7 md:grid-cols-2">
-          <Reveal y={16} className="liquid-glass flex flex-col rounded-xl p-5">
-            <div className="flex items-center gap-2">
-              <Eye className="size-3.5 text-red-400" />
-              <span className="font-mono text-[11px] uppercase tracking-wider text-red-400">
-                Transparent venue
-              </span>
-            </div>
-            {/* mb-5 is the floor the mt-auto below cannot provide on its own. */}
-            <dl className="mb-5 mt-5 space-y-2.5 font-mono text-[13px]">
-              {[
-                ["side", "LONG"],
-                ["size", "5.33 ETH"],
-                ["leverage", "10×"],
-                ["limit", "1,876.59"],
-                ["trader", "0x38bE…8214"],
-              ].map(([k, v]) => (
-                <div key={k} className="flex justify-between gap-3">
-                  <dt className="text-white/35">{k}</dt>
-                  <dd className="text-white/85">{v}</dd>
-                </div>
-              ))}
-            </dl>
-            {/* mt-auto so the two closing notes sit on the same line. */}
-            <p className="mt-auto border-t border-white/10 pt-4 text-[12px] leading-[1.55] text-white/45">
-              Everything a searcher needs to price your trade, and time enough to
-              act on it.
-            </p>
-          </Reveal>
-
-          <Reveal y={16} delay={0.08} className="liquid-glass flex flex-col rounded-xl p-5">
-            <div className="flex items-center gap-2">
-              <EyeOff className="size-3.5 text-emerald-400" />
-              <span className="font-mono text-[11px] uppercase tracking-wider text-emerald-400">
-                dorr
-              </span>
-            </div>
-            <div className="mb-5 mt-5 break-all font-mono text-[13px] leading-[1.7] text-white/85">
-              c82e45c4093936ec7f4b1a9d0e2f6a8c
-              <br />
-              3d5b7e91a0c4f28d6b13e75904af2c88
-            </div>
-            <p className="mt-auto border-t border-white/10 pt-4 text-[12px] leading-[1.55] text-white/45">
-              The entire public record, until the order has already cleared.
-            </p>
-          </Reveal>
-        </div>
+      <div className="mt-14">
+        <SealingScene />
       </div>
+
+      <dl className="mt-12 grid gap-8 border-t border-white/10 pt-10 sm:grid-cols-3">
+        {[
+          ["Stops", "Never published. A stop you can see is a stop you can hunt."],
+          ["Epochs", "Sealed bids clear at one uniform price, so cutting the queue buys nothing."],
+          ["Disclosure", "Open a past order to an auditor of your choosing, and to nobody else."],
+        ].map(([term, def]) => (
+          <div key={term}>
+            <dt className="font-mono text-[11px] uppercase tracking-wider text-white/40">{term}</dt>
+            <dd className="mt-2.5 text-[13px] leading-[1.6] text-white/55">{def}</dd>
+          </div>
+        ))}
+      </dl>
+
+      <p className="mt-10 max-w-xl text-[13px] leading-[1.6] text-white/40">
+        Seal it to a future drand round and not even we can open it early.
+      </p>
     </section>
   );
 }
@@ -349,43 +318,62 @@ function Receipts() {
       id="receipts"
       className="mx-auto max-w-6xl scroll-mt-24 border-t border-white/10 px-6 py-20 md:py-28"
     >
-      <div className="grid gap-10 md:grid-cols-12">
-        <div className="md:col-span-5">
-          <h2 className="text-pretty text-[2rem] font-semibold leading-[1.05] tracking-[-0.03em] md:text-[2.75rem]">
+      <SectionHero
+        index="03"
+        eyebrow="Receipts"
+        title={
+          <>
             We put a price
             <br />
             on the mempool.
-          </h2>
-          <p className="mt-6 max-w-md text-[15px] leading-[1.65] text-white/60">
+          </>
+        }
+        lede={
+          <>
             The same swap, run twice — once through the public mempool, once
             through KeeperHub&apos;s private routing — with a real searcher bot
             hunting it on its own key and its own gas. The gap between the two
             is the invoice.
-          </p>
-          <p className="mt-6 max-w-md text-[15px] leading-[1.65] text-white/60">
-            Across 22 duels the public lane gave up{" "}
-            <strong className="font-semibold text-white">$2,771.87</strong> —
-            fifteen sandwiches landed on it. The private lane was never
-            sandwiched once.
-          </p>
-          <Link
-            href="/mev"
-            className="mt-7 inline-flex items-center gap-1.5 text-sm text-white/75 underline-offset-4 transition-colors hover:text-white hover:underline"
-          >
-            Run one yourself
-            <ArrowUpRight className="size-3.5" />
-          </Link>
-        </div>
+          </>
+        }
+      />
 
+      <div className="mt-14">
+        <LanesScene />
+      </div>
+
+      {/*
+        The totals read across the full measure and the ledger runs full width
+        beneath them. As a two-column split the prose ran out after four lines
+        and left most of a screen of empty column beside a table that had room
+        to spare — the diagram above now carries the visual weight this layout
+        was trying to balance.
+      */}
+      <div className="mt-16 flex flex-wrap items-baseline justify-between gap-x-10 gap-y-4">
+        <p className="max-w-xl text-[15px] leading-[1.65] text-white/60">
+          Across 22 duels the public lane gave up{" "}
+          <strong className="font-semibold text-white">$2,771.87</strong> —
+          fifteen sandwiches landed on it. The private lane was never sandwiched
+          once.
+        </p>
+        <Link
+          href="/mev"
+          className="inline-flex shrink-0 items-center gap-1.5 text-sm text-white/75 underline-offset-4 transition-colors hover:text-white hover:underline"
+        >
+          Run one yourself
+          <ArrowUpRight className="size-3.5" />
+        </Link>
+      </div>
+
+      <div className="mt-10">
         {/*
-          min-w-0 is load-bearing. A grid item defaults to min-width:auto, so
-          the table's 30rem minimum propagated all the way up and made the
-          section wider than a phone — at which point the page's overflow-x-hidden
-          clipped the body copy rather than letting the table scroll. Allowing
-          the column to shrink below its content is what hands the overflow back
-          to the scroller that is supposed to own it.
+          min-w-0 stays even now the table is full width: any flex or grid item
+          defaults to min-width:auto, so the table's own minimum could still
+          push the section wider than a phone, and the page clips rather than
+          scrolls. Letting this box shrink below its content keeps the overflow
+          where it belongs.
         */}
-        <div className="min-w-0 md:col-span-7">
+        <div className="min-w-0">
           {/*
             Three columns on a phone, four from sm up. The point of this table
             is the second money column sitting at zero next to the first, so it
@@ -509,18 +497,27 @@ function Trust() {
   ];
 
   return (
-    <section id="trust" className="mx-auto max-w-6xl scroll-mt-24 px-6 py-20 md:py-28">
-      <h2 className="max-w-3xl text-pretty text-[2rem] font-semibold leading-[1.05] tracking-[-0.03em] md:text-[2.75rem]">
-        We can work out what you are owed.
-        <span className="text-white/40"> We cannot pay it.</span>
-      </h2>
-      <p className="mt-6 max-w-xl text-[15px] leading-[1.65] text-white/60">
-        Off-chain matching is what makes the privacy possible, and it means the
-        operator alone knows the book. That is precisely why the contracts give
-        it nothing to act on.
-      </p>
+    <section
+      id="trust"
+      className="mx-auto max-w-6xl scroll-mt-24 border-t border-white/10 px-6 py-20 md:py-28"
+    >
+      <SectionHero
+        index="04"
+        eyebrow="Trust model"
+        title={
+          <>
+            We can work out what you are owed.
+            <span className="text-white/40"> We cannot pay it.</span>
+          </>
+        }
+        lede="Off-chain matching is what makes the privacy possible, and it means the operator alone knows the book. That is precisely why the contracts give it nothing to act on."
+      />
 
-      <dl className="mt-12 border-t border-white/10">
+      <div className="mt-14">
+        <BoundaryScene />
+      </div>
+
+      <dl className="mt-16 border-t border-white/10">
         {rows.map(([claim, who, guard]) => (
           <div
             key={claim}
