@@ -21,3 +21,8 @@ tools/scripts/*.log
 # Midnight localnet runtime DB (regenerated each run)
 vendor/zkperps/midnight-level-db/
 apps/web/.claude/
+
+# foundry deps (installed via forge install / cp)
+contracts/lib/
+contracts/out/
+contracts/cache/

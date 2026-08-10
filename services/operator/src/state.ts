@@ -111,7 +111,7 @@ export interface SealedOrder {
 
 export interface Job {
   id: string;
-  kind: "commit" | "execute" | "close" | "faucet" | "withdraw";
+  kind: "commit" | "execute" | "close" | "faucet" | "withdraw" | "mev-duel";
   refId: string;
   status: "running" | "complete" | "error";
   steps: Array<{ label: string; status: "running" | "complete" | "error"; detail?: string; txHash?: string; ms?: number }>;

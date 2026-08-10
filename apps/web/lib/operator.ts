@@ -174,7 +174,7 @@ export interface JobStep {
 
 export interface Job {
   id: string;
-  kind: "commit" | "execute" | "close" | "faucet" | "withdraw";
+  kind: "commit" | "execute" | "close" | "faucet" | "withdraw" | "mev-duel";
   refId: string;
   status: "running" | "complete" | "error";
   steps: JobStep[];
@@ -679,4 +679,103 @@ export const operator = {
   /** Verify a disclosure you were handed against its on-chain commitment (no auth). */
   verifyDisclosure: (disclosure: Disclosure) =>
     post<DisclosureVerdict>("/disclose/verify", { disclosure }),
+};
+
+// ─── MEV Shield ───────────────────────────────────────────────────────────────
+// The public-vs-private lane experiment. Everything below reflects real Sepolia
+// transactions: `seenInMempool` is an independent observer's record, not a claim
+// echoed back from an API.
+
+export interface MevStatus {
+  configured: boolean;
+  reason?: string;
+  chainId: number;
+  network: string;
+  explorer: string;
+  pool: string;
+  baseToken: string;
+  quoteToken: string;
+  reserveBase: string;
+  reserveQuote: string;
+  midPriceUsd: number;
+  searcher: string | null;
+  searcherArmed: boolean;
+  trader: string | null;
+  privateLaneReady: boolean;
+  note: string;
+}
+
+export interface MevSandwich {
+  landed: boolean;
+  frontRunHash?: string;
+  backRunHash?: string;
+  reactionMs?: number;
+  searcherProfit?: string;
+  error?: string;
+}
+
+export interface MevLane {
+  lane: "public" | "private";
+  quotedOut: string;
+  actualOut: string;
+  shortfall: string;
+  shortfallUsd: number;
+  transactionHash?: string;
+  transactionLink?: string;
+  blockNumber?: number;
+  executionId?: string;
+  seenInMempool: boolean;
+  mempoolExposureMs?: number;
+  sandwich?: MevSandwich;
+  error?: string;
+}
+
+export interface MevDuel {
+  id: string;
+  at: string;
+  amountIn: string;
+  baseForQuote: boolean;
+  slippageBps: number;
+  pool: string;
+  chainId: number;
+  public?: MevLane;
+  private?: MevLane;
+  savedUsd: number;
+  notes?: string[];
+}
+
+export interface MevLeaderboard {
+  duels: number;
+  sandwichesLanded: number;
+  publicSeenInMempool: number;
+  privateSeenInMempool: number;
+  totalLostUsd: number;
+  totalSavedUsd: number;
+  worstSingleLossUsd: number;
+  avgLossPerPublicTradeUsd: number;
+  entries: Array<{
+    id: string;
+    at: string;
+    amountIn: string;
+    lostUsd: number;
+    savedUsd: number;
+    sandwichLanded: boolean;
+    publicTx?: string;
+    privateTx?: string;
+  }>;
+}
+
+export const mevApi = {
+  status: () => get<MevStatus>("/mev/status"),
+  leaderboard: () => get<MevLeaderboard>("/mev/leaderboard"),
+  duels: async (limit = 25) => (await get<{ duels: MevDuel[] }>(`/mev/duels?limit=${limit}`)).duels,
+  duel: (id: string) => get<MevDuel>(`/mev/duels/${id}`),
+  chains: () =>
+    get<{
+      chains: Array<{ chainId: number; name: string; enabled: boolean; testnet: boolean; privateMempool: boolean }>;
+      privateCapable: string[];
+    }>("/mev/chains"),
+  /** Starts a duel and returns a job id — it spans several blocks. Poll `job`. */
+  runDuel: (p: { amountIn?: string; slippageBps?: number; baseForQuote?: boolean }) =>
+    post<{ jobId: string; note: string }>("/mev/duel", p),
 };

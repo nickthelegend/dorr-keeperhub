@@ -32,10 +32,14 @@ import {
 } from "./cardano.js";
 import { createJob, jobStep, completeJob, failJob } from "./jobs.js";
 import { verifyAuth, type AuthEnvelope } from "./auth.js";
+import { mev } from "./mev/routes.js";
 import { env } from "./env.js";
 
 export const app = new Hono();
 app.use("*", cors({ origin: "*", allowMethods: ["GET", "POST", "OPTIONS"], allowHeaders: ["Content-Type"] }));
+
+// MEV Shield — public-vs-private lane duels and the savings leaderboard.
+app.route("/", mev);
 
 const bad = (c: Context, msg: string, code: ContentfulStatusCode = 400) =>
   c.json({ error: msg }, code);

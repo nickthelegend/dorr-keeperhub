@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { operator, type Job, type Market } from "@/lib/operator";
+import { mevApi, operator, type Job, type Market } from "@/lib/operator";
 
 /** Everything fails soft: components render loading/empty states on error. */
 
@@ -148,4 +148,35 @@ export function useInvalidateTrading() {
     qc.invalidateQueries({ queryKey: ["operator", "anchors"] });
     qc.invalidateQueries({ queryKey: ["operator", "events"] });
   };
+}
+
+// ─── MEV Shield ───────────────────────────────────────────────────────────────
+
+export function useMevStatus() {
+  return useQuery({
+    queryKey: ["mev", "status"],
+    queryFn: mevApi.status,
+    refetchInterval: 10_000,
+    retry: false,
+  });
+}
+
+export function useMevLeaderboard() {
+  return useQuery({
+    queryKey: ["mev", "leaderboard"],
+    queryFn: mevApi.leaderboard,
+    refetchInterval: 5_000,
+    retry: false,
+    placeholderData: (prev) => prev,
+  });
+}
+
+export function useMevDuels(limit = 25) {
+  return useQuery({
+    queryKey: ["mev", "duels", limit],
+    queryFn: () => mevApi.duels(limit),
+    refetchInterval: 5_000,
+    retry: false,
+    placeholderData: (prev) => prev,
+  });
 }

@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+import { ShieldCheck } from "lucide-react";
 import { cn } from "@/lib/core";
 import { WalletConnectButton } from "./wallet-connect-button";
 import { DemoShowcase } from "./attack-lab";
@@ -105,6 +107,13 @@ export default function TradingNavbar() {
         {/* Right: status + demo + wallet */}
         <div className="flex items-center gap-2 sm:gap-3">
           <HealthChips />
+          <Link
+            href="/mev"
+            className="flex items-center gap-1.5 rounded-md border border-success/40 bg-success/5 px-2.5 py-1.5 text-[10px] uppercase tracking-wider text-success transition-colors hover:bg-success/10"
+          >
+            <ShieldCheck className="size-3.5" />
+            <span className="hidden sm:inline">MEV Shield</span>
+          </Link>
           <DemoShowcase />
           <WalletConnectButton />
         </div>

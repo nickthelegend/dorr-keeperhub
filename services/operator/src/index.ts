@@ -5,12 +5,17 @@ import { MARKETS } from "./markets.js";
 import { validateFeeds, startPricePolling, getPrice } from "./ftso.js";
 import { seedPool, recenter } from "./vamm.js";
 import { loadState } from "./state.js";
+import { loadDuels } from "./mev/store.js";
 import { applyFundingTick, scanLiquidations, scanLimitOrders, scanStops, settleSealedBatch } from "./trading.js";
 import { initCardano } from "./cardano.js";
 
 async function main() {
   console.log("dorr operator starting…");
   loadState();
+  // MEV Shield duel history is persisted separately from trading state, so the
+  // leaderboard survives independently of the operator ledger.
+  const duels = loadDuels().duels.length;
+  if (duels) console.log(`[mev] ${duels} persisted duel${duels === 1 ? "" : "s"} loaded`);
 
   // Eagerly bring up Cardano so cardanoReady() is true from the start (enables
   // CIP-68 minting on execute). Non-fatal: an unfunded/misconfigured wallet just

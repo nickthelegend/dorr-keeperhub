@@ -1,0 +1,142 @@
+{
+  "version": 1,
+  "duels": [
+    {
+      "id": "1dc11171-7b8f-407d-97c6-1aff77d9346b",
+      "at": "2026-08-10T13:25:40.065Z",
+      "amountIn": "10000000000000000000",
+      "baseForQuote": true,
+      "slippageBps": 100,
+      "pool": "0xb261e0df84a14ec7bb698f986b65b8a27d1b50e1",
+      "chainId": 11155111,
+      "public": {
+        "lane": "public",
+        "quotedOut": "19743160687941225977009",
+        "actualOut": "19743160687941225977009",
+        "shortfall": "0",
+        "shortfallUsd": 0,
+        "seenInMempool": true,
+        "executionId": "jzxsy7bxgjp6be0glwbpr",
+        "transactionHash": "0xaea806793f989a2b0054a5689c0c5296f51f0c1d2b79587d1ee0b774914bf79d",
+        "transactionLink": "https://sepolia.etherscan.io/tx/0xaea806793f989a2b0054a5689c0c5296f51f0c1d2b79587d1ee0b774914bf79d",
+        "blockNumber": 11459475,
+        "mempoolExposureMs": 2200
+      },
+      "private": {
+        "lane": "private",
+        "quotedOut": "19356609202173814893584",
+        "actualOut": "19356609202173814893584",
+        "shortfall": "0",
+        "shortfallUsd": 0,
+        "seenInMempool": true,
+        "executionId": "lo05qjb576gvq3t6ljjjo",
+        "transactionHash": "0xcb79587fe16c5a00da70fd648666e3e9d033d1d2fbd4fd163fe0568c1047fc83",
+        "transactionLink": "https://sepolia.etherscan.io/tx/0xcb79587fe16c5a00da70fd648666e3e9d033d1d2fbd4fd163fe0568c1047fc83",
+        "blockNumber": 11459493,
+        "mempoolExposureMs": 990
+      },
+      "savedUsd": 0,
+      "notes": [
+        "trading wallet topped up from the token faucet (gas sponsored)",
+        "pool approved by the trading wallet (gas sponsored)",
+        "BOTH lanes were visible in the public mempool — private routing did not take effect for this run"
+      ]
+    },
+    {
+      "id": "51ec7bd4-4e86-456d-9d88-490440ef0450",
+      "at": "2026-08-10T13:36:54.856Z",
+      "amountIn": "10000000000000000000",
+      "baseForQuote": true,
+      "slippageBps": 100,
+      "pool": "0xb261e0df84a14ec7bb698f986b65b8a27d1b50e1",
+      "chainId": 11155111,
+      "public": {
+        "lane": "public",
+        "quotedOut": "18981305566371402120955",
+        "actualOut": "18791492510707688099749",
+        "shortfall": "189813055663714021206",
+        "shortfallUsd": 189.813055663714,
+        "seenInMempool": true,
+        "executionId": "v2pvp3h4ta5ye51lump9i",
+        "transactionLink": "https://sepolia.etherscan.io/tx/0x746652c413f9221cac4e92f9c62f77049c12733dfc2db175772b1df2354af516",
+        "transactionHash": "0x746652c413f9221cac4e92f9c62f77049c12733dfc2db175772b1df2354af516",
+        "blockNumber": 11459545,
+        "mempoolExposureMs": 4976,
+        "sandwich": {
+          "landed": true,
+          "frontRunHash": "0x12a5ffb85458a562ff98fdab7766efb0afd3e2cfe66ad25ddf933981534c3c02",
+          "backRunHash": "0xfd83807e208fec3b8cd724cd83908e281de064269fe9e89bbe3e32896e3d2bc9",
+          "reactionMs": 1281,
+          "searcherProfit": "349444503700210652222"
+        }
+      },
+      "private": {
+        "lane": "private",
+        "quotedOut": "42478987772421149462672",
+        "actualOut": "0",
+        "shortfall": "0",
+        "shortfallUsd": 0,
+        "seenInMempool": false,
+        "executionId": "t9squngor19t3xb44vnm4",
+        "transactionLink": "https://sepolia.etherscan.io/tx/[object Object]",
+        "transactionHash": {
+          "hash": "0x20daac639584949480d1adfbf46bd86e4c8adee2c6f835b82702db41e47c6d34",
+          "nodeId": "step-1",
+          "chainId": 11155111,
+          "gasUsed": "76527",
+          "nodeName": "Private Swap",
+          "verified": true,
+          "verifiedAt": "2026-08-10T13:36:52.568Z",
+          "blockNumber": 11459547,
+          "receiptStatus": "success"
+        },
+        "error": "hash.toLowerCase is not a function. (In 'hash.toLowerCase()', 'hash.toLowerCase' is undefined)"
+      },
+      "savedUsd": 189.813055663714,
+      "notes": []
+    },
+    {
+      "id": "39f5e396-312a-4c41-9637-dd65fb504e72",
+      "at": "2026-08-10T13:46:46.561Z",
+      "amountIn": "10000000000000000000",
+      "baseForQuote": true,
+      "slippageBps": 100,
+      "pool": "0xb261e0df84a14ec7bb698f986b65b8a27d1b50e1",
+      "chainId": 11155111,
+      "public": {
+        "lane": "public",
+        "quotedOut": "19761644826882540959321",
+        "actualOut": "19564028378613715549755",
+        "shortfall": "197616448268825409566",
+        "shortfallUsd": 197.61644826882542,
+        "seenInMempool": true,
+        "executionId": "vsqhfcbyxfto0ck7p5nng",
+        "transactionLink": "https://sepolia.etherscan.io/tx/0x8029cc1b7b48eedd0e8041e64b7c02d8f8f9542658295ca1f9596fbdbb34e323",
+        "transactionHash": "0x8029cc1b7b48eedd0e8041e64b7c02d8f8f9542658295ca1f9596fbdbb34e323",
+        "blockNumber": 11459580,
+        "mempoolExposureMs": 6594,
+        "sandwich": {
+          "landed": true,
+          "frontRunHash": "0xddd85faa7c0d75cad892955705c7dfa5ee105e0f5d05146a4b093afc9acdcbd7",
+          "backRunHash": "0xeedeb67cc342a2b4616fb2f6776bba99a70287db37aeca41f526b04af97c8d38",
+          "reactionMs": 1466,
+          "searcherProfit": "70144203055906825"
+        }
+      },
+      "private": {
+        "lane": "private",
+        "quotedOut": "19378217039873743914387",
+        "actualOut": "19378217039873743914387",
+        "shortfall": "0",
+        "shortfallUsd": 0,
+        "seenInMempool": false,
+        "executionId": "cw6n8wt9y5ce94iitji3n",
+        "transactionLink": "https://sepolia.etherscan.io/tx/0xdf506b086cc4d2bb25fb7512da3a926eb046864ec1529488fa32ceb8473da131",
+        "transactionHash": "0xdf506b086cc4d2bb25fb7512da3a926eb046864ec1529488fa32ceb8473da131",
+        "blockNumber": 11459593
+      },
+      "savedUsd": 197.61644826882542,
+      "notes": []
+    }
+  ]
+}
