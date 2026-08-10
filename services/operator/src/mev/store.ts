@@ -12,7 +12,9 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { resolve } from "node:path";
 import { DORR_ROOT } from "../env.js";
 
-const DATA_DIR = resolve(DORR_ROOT, "data");
+// Same directory the operator's trading state uses, so all persisted state
+// lives in one place and one backup captures everything.
+const DATA_DIR = resolve(DORR_ROOT, "services/operator/data");
 const DUELS_PATH = resolve(DATA_DIR, "mev-duels.json");
 
 export interface LaneResult {
@@ -97,6 +99,9 @@ export function loadDuels(): DuelFile {
   // leaving a number in the leaderboard that today's code would never emit.
   let migrated = false;
   for (const d of file.duels) {
+    for (const lane of [d.public, d.private]) {
+      if (lane && normaliseStoredHash(lane)) migrated = true;
+    }
     const corrected = savingFor(d);
     if (d.savedUsd !== corrected) {
       d.savedUsd = corrected;
@@ -109,6 +114,30 @@ export function loadDuels(): DuelFile {
   // same numbers the API reports.
   if (migrated) persist();
   return file;
+}
+
+/**
+ * Repair a lane whose hash was stored as the workflow's `{hash, blockNumber…}`
+ * object rather than a plain string.
+ *
+ * Workflow executions report transactions as objects while the REST executor
+ * reports a bare string; an early run recorded the object verbatim, which
+ * rendered as an explorer link to `/tx/[object Object]`. The real hash is
+ * present inside that object, so this recovers it rather than discarding a
+ * genuine, verifiable transaction. Returns true when it changed something.
+ */
+function normaliseStoredHash(lane: LaneResult): boolean {
+  const raw = lane.transactionHash as unknown;
+  if (!raw || typeof raw === "string") return false;
+  const hash = (raw as { hash?: unknown }).hash;
+  if (typeof hash !== "string") return false;
+  lane.transactionHash = hash;
+  if (!lane.transactionLink || lane.transactionLink.includes("[object")) {
+    lane.transactionLink = `https://sepolia.etherscan.io/tx/${hash}`;
+  }
+  const block = (raw as { blockNumber?: unknown }).blockNumber;
+  if (lane.blockNumber == null && typeof block === "number") lane.blockNumber = block;
+  return true;
 }
 
 /** A saving is only claimed when both lanes actually completed. */

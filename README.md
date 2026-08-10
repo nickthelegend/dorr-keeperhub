@@ -18,7 +18,7 @@ Everyone says private transaction routing prevents MEV. Nobody shows you the inv
 
 MEV Shield runs a controlled experiment on Sepolia. The same trade, the same pool, the same slippage tolerance, the same signing wallet, the same relayer — back to back, differing in exactly one boolean: whether the transaction touched the public mempool. A real searcher bot watches Sepolia's pending-transaction feed the whole time and sandwiches whatever it can see.
 
-**Latest duel — sell 10 mETH, 1% slippage tolerance:**
+**Sell 10 mETH, 1% slippage tolerance:**
 
 | | Public mempool | Private lane (KeeperHub) |
 |---|---|---|
@@ -34,6 +34,20 @@ Every one of these is a real Sepolia transaction:
 - attacker front-run — [`0xddd85faa…`](https://sepolia.etherscan.io/tx/0xddd85faa7c0d75cad892955705c7dfa5ee105e0f5d05146a4b093afc9acdcbd7)
 - attacker back-run — [`0xeedeb67c…`](https://sepolia.etherscan.io/tx/0xeedeb67cc342a2b4616fb2f6776bba99a70287db37aeca41f526b04af97c8d38)
 - victim trade, private lane — [`0xdf506b08…`](https://sepolia.etherscan.io/tx/0xdf506b086cc4d2bb25fb7512da3a926eb046864ec1529488fa32ceb8473da131)
+
+**The damage scales with what you disclose.** Same lab, bigger trade and a looser limit:
+
+| Trade | Slippage tolerance | Public mempool | Private lane |
+|---|---|---|---|
+| 10 mETH | 100 bps | $197.62 | $0.00 |
+| 25 mETH | 200 bps | **$972.73** | **$0.00** |
+
+The second one: [victim](https://sepolia.etherscan.io/tx/0xe9ed280bce6c5b64e31bf6f1bc8045e5fbbe64527232e587614c66b48fe8f9cb) · [front-run](https://sepolia.etherscan.io/tx/0x7bc8ec5e7ea657562a158be785bfd9ae7a0272329c8ad79201d846eecd6d184e) · [back-run](https://sepolia.etherscan.io/tx/0x462b9438b38cd15db4a56bb1d8e1d87558a6291505d88d20c122302c956cbff6) · [private](https://sepolia.etherscan.io/tx/0xb373c6edc8787b51bcaafd990a1cadf3c8f328338ce828395c765cae388d7809)
+
+Across every duel run so far: **4 duels, 3 sandwiches landed, $1,360.16 lost to the public
+mempool, $1,170.34 saved by the private lane.** Public-lane transactions were caught in the
+mempool 4 times out of 4; private-lane transactions once out of 4 — that one being the first
+run, before we discovered private routing was workflow-only.
 
 > **KeeperHub submission transaction:** [`0xc67f71a7…`](https://sepolia.etherscan.io/tx/0xc67f71a7029ab41fb735c62b2358a4588db8e7972744fbadd0f394b707d31bd1) — executed via KeeperHub, gas sponsored, receipt independently verified, block 11459375.
 
@@ -199,3 +213,7 @@ bun run --cwd apps/web dev
 Built on the `dorr` codebase — a privacy-preserving perpetuals venue (sealed orders via drand timelock, uniform-price batch auctions, TEE-attested settlement). MEV Shield reuses its operator, job system, and design language, and replaces the simulated attack lab with one that runs on chain.
 
 Inspired by Nucast's [Anti-Front-Running-ZKPerps-on-Cardano-w-MidnightZK](https://github.com/nucastio/Anti-Front-Running-ZKPerps-on-Cardano-w-MidnightZK).
+
+A separate write-up of the integration experience — six reproducible issues with proposed
+fixes, submitted for the onboarding-UX bounty — is in
+[`docs/keeperhub-onboarding-friction.md`](docs/keeperhub-onboarding-friction.md).

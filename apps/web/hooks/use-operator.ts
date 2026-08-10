@@ -130,6 +130,9 @@ export function useJob(jobId: string | undefined) {
     queryFn: () => operator.job(jobId!),
     enabled: !!jobId,
     retry: false,
+    // Also poll while the tab is in the background: a duel takes minutes, and a
+    // paused poll leaves the button stuck on "Running…" long after it finished.
+    refetchIntervalInBackground: true,
     refetchInterval: (query) => {
       const job = query.state.data;
       if (job && job.status !== "running") return false;
@@ -166,6 +169,10 @@ export function useMevLeaderboard() {
     queryKey: ["mev", "leaderboard"],
     queryFn: mevApi.leaderboard,
     refetchInterval: 5_000,
+    // A duel spans minutes, and people switch tabs while they wait. Without
+    // this the board silently freezes on whatever it showed when focus was
+    // lost, which reads as "the run hung".
+    refetchIntervalInBackground: true,
     retry: false,
     placeholderData: (prev) => prev,
   });
@@ -176,6 +183,7 @@ export function useMevDuels(limit = 25) {
     queryKey: ["mev", "duels", limit],
     queryFn: () => mevApi.duels(limit),
     refetchInterval: 5_000,
+    refetchIntervalInBackground: true,
     retry: false,
     placeholderData: (prev) => prev,
   });

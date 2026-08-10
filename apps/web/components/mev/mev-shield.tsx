@@ -314,24 +314,35 @@ export function MevShield() {
         <Card>
           <PanelHeader title="The lab" bullet="default" />
           <CardContent className="grid gap-x-6 gap-y-1 text-[10px] sm:grid-cols-2">
-            {[
-              ["Pool", status.pool],
-              ["mETH", status.baseToken],
-              ["mUSD", status.quoteToken],
-              ["Trader (KeeperHub)", status.trader ?? "—"],
-              ["Searcher (adversary)", status.searcher ?? "—"],
-              ["Reserves", `${Number(status.reserveBase).toFixed(2)} mETH / ${Number(status.reserveQuote).toLocaleString()} mUSD`],
-            ].map(([label, value]) => (
+            {(
+              [
+                ["Pool", status.pool, true],
+                ["mETH", status.baseToken, true],
+                ["mUSD", status.quoteToken, true],
+                ["Trader (KeeperHub)", status.trader ?? "—", true],
+                ["Searcher (adversary)", status.searcher ?? "—", true],
+                // Not an address — must not be linked to /address/.
+                [
+                  "Reserves",
+                  `${Number(status.reserveBase).toFixed(2)} mETH / ${Number(status.reserveQuote).toLocaleString()} mUSD`,
+                  false,
+                ],
+              ] as Array<[string, string, boolean]>
+            ).map(([label, value, isAddress]) => (
               <div key={label} className="flex items-baseline justify-between gap-2">
                 <span className="uppercase tracking-wider text-muted-foreground">{label}</span>
-                <a
-                  href={`${status.explorer}/address/${value}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="truncate font-mono text-muted-foreground hover:text-foreground"
-                >
-                  {value}
-                </a>
+                {isAddress && value.startsWith("0x") ? (
+                  <a
+                    href={`${status.explorer}/address/${value}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="truncate font-mono text-muted-foreground hover:text-foreground"
+                  >
+                    {value}
+                  </a>
+                ) : (
+                  <span className="truncate font-mono text-muted-foreground">{value}</span>
+                )}
               </div>
             ))}
             <p className="col-span-full mt-2 text-muted-foreground">{status.note}</p>
