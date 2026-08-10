@@ -255,6 +255,20 @@
    Scoped to the marketing route. The terminal has its own visual language and
    none of this reaches it. */
 
+/*
+   Anchor navigation. `scroll-behavior` only has an effect on the element that
+   actually scrolls, which is <html> — setting it on the landing wrapper does
+   nothing at all. `:has()` keeps it off the terminal, where a jump should be
+   instant.
+*/
+html:has(.landing-root) {
+  scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html:has(.landing-root) { scroll-behavior: auto; }
+}
+
 /* The one place Inter applies. Everything under the product routes keeps the
    monospaced stack the trading screen is built around. */
 .landing-root,

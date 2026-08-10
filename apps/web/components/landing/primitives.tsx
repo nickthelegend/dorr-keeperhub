@@ -5,16 +5,24 @@ import { ChevronRight } from "lucide-react";
 import { cn } from "@/lib/core";
 
 /**
- * The gradient the headline word wears.
+ * The gradient the headline phrase wears.
  *
- * Stops run dark → deep blue → pale cyan → cyan → back to dark, over a 200%
- * wide box, so the animation can slide a highlight across the text rather than
- * recolouring it. The noise filter breaks up the banding that a smooth
- * six-stop gradient shows on a wide glyph.
+ * The sweep is the point — a 200%-wide box lets the animation slide a highlight
+ * across the letters rather than recolouring them — but the stops have a floor.
+ * The first version ran down to #091020 at both ends, which on a #0c0c0c page
+ * is very nearly the background: the leading and trailing letters disappeared
+ * and the word read with holes in it. Every stop here clears 4.5:1 against the
+ * page, so the highlight travels over text that is legible the whole way.
+ *
+ * Floors flatten, though, and the first fix overcorrected into a single narrow
+ * band of blue with no highlight left in it. The range is opened back up at the
+ * bright end instead of the dark one — #e8fbff is close to white and #00d2ff
+ * carries the hue — so the sweep still reads as a moving light rather than a
+ * tint, and the darkest stop is still #4a7fc1 at 4.75:1.
  */
 export const gradientStyle: React.CSSProperties = {
   backgroundImage:
-    "linear-gradient(to right, #091020 0%, #0B2551 12.5%, #A4F4FD 32.5%, #00d2ff 50%, #0B2551 67.5%, #091020 87.5%, #091020 100%)",
+    "linear-gradient(to right, #4a7fc1 0%, #6fb0dd 10%, #00d2ff 26%, #e8fbff 40%, #A4F4FD 52%, #00d2ff 64%, #5f9ed2 82%, #4a7fc1 100%)",
   backgroundSize: "200% auto",
   WebkitBackgroundClip: "text",
   backgroundClip: "text",
