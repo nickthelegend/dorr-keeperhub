@@ -2,7 +2,7 @@
 
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { PanelHeader } from "@/components/trading/panel-header";
+import { PanelHeader } from "@/components/mev/panel-header";
 import { cn } from "@/lib/core";
 import type { MevLane } from "@/lib/operator";
 import { ExternalLink, Eye, EyeOff } from "lucide-react";

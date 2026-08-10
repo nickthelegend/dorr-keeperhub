@@ -67,6 +67,17 @@ export function database(): Database {
     -- not. Holding it only in memory meant an operator restart silently
     -- downgraded real evidence back to "unobserved", which reads as though the
     -- audit never happened.
+    CREATE TABLE IF NOT EXISTS jobs (
+      id           TEXT PRIMARY KEY,
+      kind         TEXT NOT NULL,
+      ref_id       TEXT NOT NULL,
+      status       TEXT NOT NULL,
+      steps        TEXT NOT NULL DEFAULT '[]',
+      error        TEXT,
+      created_at   TEXT NOT NULL,
+      completed_at TEXT
+    );
+
     CREATE TABLE IF NOT EXISTS agent_audit (
       execution_id   TEXT PRIMARY KEY,
       tx_hash        TEXT,

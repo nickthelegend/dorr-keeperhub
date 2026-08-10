@@ -38,6 +38,9 @@ import { sepolia } from "viem/chains";
 import { env } from "../env.js";
 import { POOL_ABI, TOKEN_ABI } from "./artifacts.js";
 
+/** Ceiling on the searcher's priority bid: 3 gwei is decisive on Sepolia. */
+const MAX_PRIORITY_WEI = 3_000_000_000n;
+
 /** `swap(bool,uint256,uint256,address)` — the only call worth attacking. */
 export const SWAP_SELECTOR = toFunctionSelector("swap(bool,uint256,uint256,address)");
 
@@ -409,7 +412,14 @@ export class Searcher {
       // Outbid the victim for position. Real searchers win the ordering race on
       // priority fee; on Sepolia this costs a fraction of a cent.
       const victimPriority = BigInt(tx.maxPriorityFeePerGas ?? tx.gasPrice ?? 1_000_000n);
-      const priority = victimPriority * BigInt(env.mev.searcherPriorityMultiple) + 1n;
+      // Outbid, but not without limit. The multiplier was chosen when Sepolia
+      // priority fees sat around 0.001 gwei; against a relayer that bids
+      // whole gwei, 25x demands a gas budget large enough that the searcher
+      // refuses to attack at all — which reads as "no MEV" when it is really
+      // "the attacker went broke". Winning the slot needs to beat the victim,
+      // not outspend everyone on the network.
+      const uncapped = victimPriority * BigInt(env.mev.searcherPriorityMultiple) + 1n;
+      const priority = uncapped > MAX_PRIORITY_WEI ? MAX_PRIORITY_WEI : uncapped;
       const block = await this.publicClient.getBlock();
       const baseFee = block.baseFeePerGas ?? 1_000_000_000n;
       const maxFee = baseFee * 2n + priority;

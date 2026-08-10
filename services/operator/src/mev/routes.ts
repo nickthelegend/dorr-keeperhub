@@ -73,7 +73,7 @@ mev.get("/mev/status", async (c) => {
       searcherGasEth: Number(formatUnits(searcherGas, 18)),
       searcherFunded: searcherGas > 1_000_000_000_000_000n, // 0.001 ETH
       trader: env.keeperhub.orgWallet || null,
-      privateLaneReady: Boolean(env.keeperhub.privateWorkflowId && env.keeperhub.webhookKey),
+      privateLaneReady: Boolean(env.keeperhub.apiKey && env.keeperhub.orgWallet),
       duelRunning: running,
       note:
         "quote token is an 18dp USD stand-in: 1 mUSD := $1, so a base->quote shortfall is already denominated in dollars",

@@ -6,10 +6,9 @@ import { Bullet } from "@/components/ui/bullet";
 import { cn } from "@/lib/core";
 
 /**
- * The premium v0-dashboard panel header: a coloured Bullet accent + an uppercase
- * mono title, with an optional right-aligned action slot. Every trading panel
- * uses this so the whole terminal reads as one dense, intentional dashboard
- * rather than a stack of ad-hoc cards.
+ * A panel header: coloured accent, uppercase mono title, optional right slot.
+ * Every panel uses it so the page reads as one instrument rather than a stack
+ * of unrelated cards.
  */
 export function PanelHeader({
   title,

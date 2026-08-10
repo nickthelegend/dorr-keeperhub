@@ -3,7 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { PanelHeader } from "@/components/trading/panel-header";
+import { PanelHeader } from "@/components/mev/panel-header";
 import { cn } from "@/lib/core";
 import { mevApi } from "@/lib/operator";
 import { Bot, ExternalLink } from "lucide-react";

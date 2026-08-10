@@ -5,9 +5,7 @@ import type { Metadata } from "next";
 import { V0Provider } from "@/lib/context";
 import localFont from "next/font/local";
 import { QueryProvider } from "@/components/providers/query-provider";
-import { MarketProvider } from "@/context/market-context";
 import { Toaster } from "@/components/ui/sonner";
-import { WalletProvider } from "@/components/providers/wallet-provider";
 import { ThemeProvider } from "@/components/theme-provider";
 
 const robotoMono = Roboto_Mono({
@@ -25,11 +23,11 @@ const isV0 = process.env["VERCEL_URL"]?.includes("vusercontent.net") ?? false;
 
 export const metadata: Metadata = {
   title: {
-    template: "%s – dorr",
-    default: "dorr – private perps on Flare",
+    template: "%s – MEV Shield",
+    default: "MEV Shield — the private lane, measured",
   },
   description:
-    "FXRP-margined perpetual futures on Flare. Orders are sealed until the batch clears — not even the operator can front-run you.",
+    "The same swap run twice on Ethereum Sepolia — public mempool versus KeeperHub private routing — with the sandwich loss priced in dollars.",
 };
 
 export default function RootLayout({
@@ -64,12 +62,8 @@ export default function RootLayout({
             disableTransitionOnChange
           >
             <QueryProvider>
-              <WalletProvider>
-              <MarketProvider>
                 <div className="min-h-screen bg-background">{children}</div>
                 <Toaster />
-              </MarketProvider>
-              </WalletProvider>
             </QueryProvider>
           </ThemeProvider>
         </V0Provider>

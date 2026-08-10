@@ -6,7 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { PanelHeader } from "@/components/trading/panel-header";
+import { PanelHeader } from "@/components/mev/panel-header";
 import { useJob, useMevDuels, useMevLeaderboard, useMevStatus } from "@/hooks/use-operator";
 import { mevApi } from "@/lib/operator";
 import { cn } from "@/lib/core";

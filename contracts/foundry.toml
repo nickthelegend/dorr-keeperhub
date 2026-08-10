@@ -12,10 +12,4 @@ fs_permissions = [{ access = "read", path = "./" }, { access = "read-write", pat
 runs = 256
 
 [rpc_endpoints]
-coston2 = "https://coston2-api.flare.network/ext/C/rpc"
-flare = "https://flare-api.flare.network/ext/C/rpc"
-songbird = "https://songbird-api.flare.network/ext/C/rpc"
-
-[etherscan]
-coston2 = { key = "", url = "https://coston2-explorer.flare.network/api" }
-flare = { key = "", url = "https://flare-explorer.flare.network/api" }
+sepolia = "https://ethereum-sepolia-rpc.publicnode.com"

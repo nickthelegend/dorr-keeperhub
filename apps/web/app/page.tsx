@@ -1,5 +1,5 @@
-import TradingTerminal from "@/components/trading/terminal";
+import { MevShield } from "@/components/mev/mev-shield";
 
-export default function TradingPage() {
-  return <TradingTerminal />;
+export default function Page() {
+  return <MevShield />;
 }

@@ -14,7 +14,7 @@
  *   1. create a workflow (`kh_` org key) whose write node carries
  *      `usePrivateMempool: true`
  *   2. enable it (`kh_` key, PATCH — `go-live` returns 200 without enabling)
- *   3. fire it (`wfb_` webhook key, which only a browser session can mint)
+ *   3. fire it (`POST /api/workflows/{id}/execute`, same org key)
  *
  * The trade-off: the sponsored REST path pays gas for you, the private workflow
  * path does not. The executing wallet must hold native ETH. That is a real
@@ -26,7 +26,6 @@
 import type { Address, Hex } from "viem";
 import { env } from "../env.js";
 import { POOL_ABI } from "./artifacts.js";
-import { mintWebhookKey, siweLogin } from "./kh-session.js";
 
 const BASE = env.keeperhub.baseUrl;
 
@@ -134,19 +133,12 @@ export async function ensureWorkflow(args: SwapArgs): Promise<string> {
   return id;
 }
 
-/** A `wfb_` key, minted on demand if one isn't configured. */
-export async function webhookKey(): Promise<string> {
-  if (env.keeperhub.webhookKey) return env.keeperhub.webhookKey;
-  const session = await siweLogin();
-  return mintWebhookKey(session, "mev-shield-webhook");
-}
-
 /**
  * One transaction produced by a workflow run.
  *
- * Note the shape: workflow executions report `transactionHashes` as an array of
- * *objects*, whereas the direct REST executor reports a bare `transactionHash`
- * string. The two paths disagree, so this normalises to the richer form.
+ * Workflow executions report `transactionHashes` as an array of *objects*,
+ * whereas the direct REST executor reports a bare `transactionHash` string.
+ * The two paths disagree, so this normalises to the richer form.
  */
 export interface PrivateTx {
   hash: Hex;
@@ -198,17 +190,21 @@ function normaliseHashes(raw: unknown): PrivateTx[] {
  */
 export async function executePrivately(args: SwapArgs, timeoutMs = 420_000): Promise<PrivateExecution> {
   const workflowId = await ensureWorkflow(args);
-  const wfb = await webhookKey();
 
-  const res = await fetch(`${BASE}/api/workflows/${workflowId}/webhook`, {
+  // Triggered with the organisation key. The webhook route (`/webhook`) needs a
+  // separate `wfb_` credential that only a browser session can mint, and that
+  // session belongs to a user account rather than the organisation — so a key
+  // minted by one account cannot fire another's workflows (403). `/execute`
+  // takes the org key directly, which is both simpler and correct.
+  const fire = await api<{ executionId?: string }>(`/api/workflows/${workflowId}/execute`, {
     method: "POST",
-    headers: { authorization: `Bearer ${wfb}`, "content-type": "application/json" },
     body: JSON.stringify({}),
   });
-  const fired = (await res.json().catch(() => ({}))) as { executionId?: string };
-  const executionId = fired?.executionId;
+  const executionId = fire.body?.executionId;
   if (!executionId) {
-    throw new Error(`webhook trigger failed (HTTP ${res.status}): ${JSON.stringify(fired).slice(0, 250)}`);
+    throw new Error(
+      `could not start the private workflow (HTTP ${fire.status}): ${JSON.stringify(fire.body).slice(0, 250)}`,
+    );
   }
 
   const deadline = Date.now() + timeoutMs;

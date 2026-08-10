@@ -6,7 +6,7 @@
 
 Run the same swap twice — once through the public mempool, once through KeeperHub's private routing — and price the difference in dollars.
 
-`Ethereum Sepolia` · `KeeperHub` · real sandwich attacks · real transaction hashes
+`Ethereum Sepolia` · `KeeperHub` · real sandwich attacks · real transaction hashes · no wallet required
 
 </div>
 
@@ -44,10 +44,11 @@ Every one of these is a real Sepolia transaction:
 
 The second one: [victim](https://sepolia.etherscan.io/tx/0xe9ed280bce6c5b64e31bf6f1bc8045e5fbbe64527232e587614c66b48fe8f9cb) · [front-run](https://sepolia.etherscan.io/tx/0x7bc8ec5e7ea657562a158be785bfd9ae7a0272329c8ad79201d846eecd6d184e) · [back-run](https://sepolia.etherscan.io/tx/0x462b9438b38cd15db4a56bb1d8e1d87558a6291505d88d20c122302c956cbff6) · [private](https://sepolia.etherscan.io/tx/0xb373c6edc8787b51bcaafd990a1cadf3c8f328338ce828395c765cae388d7809)
 
-Across every duel run so far: **4 duels, 3 sandwiches landed, $1,360.16 lost to the public
-mempool, $1,170.34 saved by the private lane.** Public-lane transactions were caught in the
-mempool 4 times out of 4; private-lane transactions once out of 4 — that one being the first
-run, before we discovered private routing was workflow-only.
+Across every duel run so far: **16 duels, 11 sandwiches landed, $2,336.21 lost to
+the public mempool, $2,006.79 saved by the private lane.** Public-lane
+transactions were caught in the mempool 15 times out of 16; private-lane
+transactions once out of 16 — that one being the very first run, before we
+discovered private routing was workflow-only.
 
 > **KeeperHub submission transaction:** [`0xc67f71a7…`](https://sepolia.etherscan.io/tx/0xc67f71a7029ab41fb735c62b2358a4588db8e7972744fbadd0f394b707d31bd1) — executed via KeeperHub, gas sponsored, receipt independently verified, block 11459375.
 
@@ -124,15 +125,14 @@ Insufficient ETH balance. Have: 0.0, Need: 0.000046160843904.
 
 That is a real product trade-off, and MEV Shield reports it rather than hiding it: for small trades the gas can exceed the MEV saved. A tool that told you to route privately regardless of trade size would be selling you something.
 
-**Three different credentials, not interchangeable.**
-
-| Credential | What it can do |
-|---|---|
-| `kh_*` org API key | `/api/execute/*`, `/mcp`, reading and creating workflows |
-| `wfb_*` webhook key | fire a workflow (`POST /api/workflows/{id}/webhook`) |
-| browser session cookie | mint keys (`/api/api-keys`), account settings |
-
-The `wfb_` key can only be minted with the cookie. [`kh-session.ts`](services/operator/src/mev/kh-session.ts) obtains one headlessly over SIWE so the whole pipeline stays automatable.
+**Workflows are created *and* fired with the org key.** The obvious trigger,
+`POST /api/workflows/{id}/webhook`, needs a separate `wfb_` credential that only
+a browser session can mint — and that session belongs to a *user account*, not
+the organisation, so a key minted by one account cannot fire another's workflows
+(`403 You do not have permission to run this workflow`). We built a headless SIWE
+login to mint one before finding that `POST /api/workflows/{id}/execute` accepts
+the `kh_` org key directly. That removed an entire credential, a login flow, and
+a class of permission bug. It is not in the obvious place in the API surface.
 
 **`abi` and `functionArgs` must be JSON *strings*, not arrays.** Passing arrays is accepted without complaint and fails much later and much less legibly — an array `abi` is dropped and the API falls back to explorer auto-fetch (*"contract may not be verified"* — misleading, since you supplied one), and an array under `args` encodes as zero arguments (*"types/values length mismatch, count=0"* — reads like a bad ABI). Same trap on workflow nodes, where the symptom is `no matching fragment`.
 
@@ -193,30 +193,21 @@ Both tokens have a permissionless `mint` so anyone can reproduce the experiment.
 ## Run it
 
 ```bash
-cd contracts && forge test --match-contract MevPoolTest -vv
+cd contracts && forge test -vv
 ```
 
-That proves the sandwich economics locally, no network or keys required.
+That proves the sandwich economics locally — no network, no keys.
 
-For the live duel you need a KeeperHub org key, a Sepolia-funded deployer, and about 0.05 Sepolia ETH:
+For the live app you need a KeeperHub org key, a Sepolia-funded deployer, and
+about 0.05 Sepolia ETH:
 
 ```bash
 cp .env.example .env   # fill in ETH_DEPLOYER_KEY and KEEPERHUB_API_KEY
 ```
 
 ```bash
-cd services/operator && bun run src/scripts/keeperhub-onboard.ts
-```
-
-```bash
 cd services/operator && bun run src/scripts/mev-deploy.ts
 ```
-
-```bash
-cd services/operator && bun run src/scripts/mev-duel.ts 10 100
-```
-
-Then the UI:
 
 ```bash
 bun run --cwd services/operator start
@@ -226,9 +217,18 @@ bun run --cwd services/operator start
 bun run --cwd apps/web dev
 ```
 
-`/mev` renders the duel, both lanes, and the leaderboard. Between runs, `mev-rebalance.ts` arbitrages the pool back to its target price — every duel leaves it slightly off, since the searcher's two legs don't perfectly cancel against the 30bp fee.
+Open the app and press **Run the duel**. No wallet, no connect step — the trade
+executes from KeeperHub's own wallet, so a judge can click it on first load.
 
----
+Optional — stand up the autonomous agent, then watch its audit trail in the app:
+
+```bash
+cd services/operator && bun run src/scripts/mev-schedule.ts "0 * * * *" 2 100
+```
+
+Between runs, `mev-rebalance.ts` arbitrages the pool back to its target price;
+every duel leaves it slightly off, since the searcher's two legs don't cancel
+against the 30bp fee.
 
 ## Honest limitations
 
@@ -237,17 +237,21 @@ bun run --cwd apps/web dev
 - **Sample size is small.** The leaderboard reports exactly what happened across the duels that have been run. Nothing is annualised or extrapolated.
 - **A lost race is reported as a lost race.** If the searcher fails to land the sandwich, the public lane shows the loss it actually took — which is sometimes $0.
 - **The searcher can run out of gas.** It bids 25× the victim's priority fee and pays from its own wallet, so a long session drains it — after which it stops landing attacks and the public lane starts reporting $0. That is the most flattering way this lab can be wrong, so `/mev/status` reports the searcher's balance and the UI warns when it can no longer attack. Top it up with `mev-deploy.ts`, which is idempotent.
-- **The outbound-webhook workflow action requires a paid KeeperHub plan** (`402`). That is the action that would let KeeperHub's scheduler call this operator directly to run a full two-lane duel on a cron. The agent therefore performs the private swap itself, which needs no inbound reachability — a better demonstration, but it means the *scheduled* evidence is private-lane-only; the public-lane comparison still has to be run from the app.
+- **The scheduled agent is private-lane-only.** Driving a full two-lane duel on a cron would need KeeperHub to call this operator inbound, and its outbound-webhook action requires a paid plan (`402`). The agent therefore performs the private swap itself — no inbound reachability needed — so the unattended evidence covers privacy, while the public-lane comparison is run from the app.
 - **Private-lane gas is not sponsored**, so a full accounting for small trades should net gas against MEV saved. The UI does not currently do that subtraction.
 
 ---
 
 ## Provenance
 
-Built on the `dorr` codebase — a privacy-preserving perpetuals venue (sealed orders via drand timelock, uniform-price batch auctions, TEE-attested settlement). MEV Shield reuses its operator, job system, and design language, and replaces the simulated attack lab with one that runs on chain.
+Started life inside `dorr`, a privacy-preserving perpetuals venue on Flare. MEV
+Shield kept that project's operator scaffolding, job system and design language,
+and dropped everything else: the Flare contracts, the FXRP vault, the FTSO
+oracle, the perps engine, the Cardano/Midnight subsystem, and the simulated
+attack lab. What is left targets one chain, one relayer, and one claim.
 
 Inspired by Nucast's [Anti-Front-Running-ZKPerps-on-Cardano-w-MidnightZK](https://github.com/nucastio/Anti-Front-Running-ZKPerps-on-Cardano-w-MidnightZK).
 
-A separate write-up of the integration experience — six reproducible issues with proposed
-fixes, submitted for the onboarding-UX bounty — is in
+A separate write-up of the integration experience — reproducible issues with
+proposed fixes, submitted for the onboarding-UX bounty — is in
 [`docs/keeperhub-onboarding-friction.md`](docs/keeperhub-onboarding-friction.md).
