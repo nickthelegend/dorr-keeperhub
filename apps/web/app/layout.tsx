@@ -37,7 +37,12 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="dark">
+    // next-themes writes `style="color-scheme:…"` onto <html> from a blocking
+    // script before React hydrates, so the server markup and the client DOM
+    // legitimately differ by that one attribute. Without this, every page load
+    // logs "Extra attributes from the server: style" — a console error on a
+    // clean run, which makes real errors harder to notice.
+    <html lang="en" className="dark" suppressHydrationWarning>
       <head>
         <link
           rel="preload"

@@ -185,8 +185,18 @@ function normaliseHashes(raw: unknown): PrivateTx[] {
     .filter((t): t is PrivateTx => Boolean(t));
 }
 
-/** Fire the workflow and wait for it to reach a terminal state. */
-export async function executePrivately(args: SwapArgs, timeoutMs = 180_000): Promise<PrivateExecution> {
+/**
+ * Fire the workflow and wait for it to reach a terminal state.
+ *
+ * The default timeout is deliberately generous. Private routing does not
+ * broadcast — it offers the transaction to builders and waits to be included,
+ * so its latency is far more variable than a public send. Measured across runs
+ * of this lab: 11.8s, 60.3s, 232.8s. A 180s timeout looked reasonable and threw
+ * away a successful 232s execution as a failure, which then suppressed the
+ * saving for that duel. Waiting longer costs nothing; giving up early
+ * fabricates a loss for the lane we are trying to measure fairly.
+ */
+export async function executePrivately(args: SwapArgs, timeoutMs = 420_000): Promise<PrivateExecution> {
   const workflowId = await ensureWorkflow(args);
   const wfb = await webhookKey();
 

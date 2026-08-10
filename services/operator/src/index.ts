@@ -6,16 +6,47 @@ import { validateFeeds, startPricePolling, getPrice } from "./ftso.js";
 import { seedPool, recenter } from "./vamm.js";
 import { loadState } from "./state.js";
 import { loadDuels } from "./mev/store.js";
+import { reapOrphanedJobs } from "./jobs.js";
 import { applyFundingTick, scanLiquidations, scanLimitOrders, scanStops, settleSealedBatch } from "./trading.js";
 import { initCardano } from "./cardano.js";
 
+/**
+ * Refuse to start if an operator is already serving this port.
+ *
+ * Bun's server sets SO_REUSEPORT, so a second instance binds successfully
+ * instead of failing with EADDRINUSE. Both then hold their own in-memory state
+ * and both write `state.json`, so the last writer silently erases the other's
+ * jobs — and incoming requests round-robin between two disagreeing operators.
+ * The symptom is bizarre (a duel "running" with no job to show for it), so fail
+ * loudly here rather than let it happen.
+ */
+async function assertPortFree(port: number): Promise<void> {
+  const res = await fetch(`http://127.0.0.1:${port}/health`, {
+    signal: AbortSignal.timeout(1500),
+  }).catch(() => null);
+  if (!res?.ok) return;
+  const who = await res.json().catch(() => ({}) as { service?: string });
+  console.error(
+    `\n✗ an operator is already listening on :${port} (${(who as { service?: string }).service ?? "unknown"}).\n` +
+      `  Two instances share one state file and will corrupt each other's jobs.\n` +
+      `  Stop it first:  kill $(lsof -ti:${port})\n`,
+  );
+  process.exit(1);
+}
+
 async function main() {
   console.log("dorr operator starting…");
+  await assertPortFree(env.port);
   loadState();
   // MEV Shield duel history is persisted separately from trading state, so the
   // leaderboard survives independently of the operator ledger.
   const duels = loadDuels().duels.length;
   if (duels) console.log(`[mev] ${duels} persisted duel${duels === 1 ? "" : "s"} loaded`);
+
+  // Jobs cannot survive the process that ran them; leaving them "running" makes
+  // the UI poll a spinner that will never resolve.
+  const orphans = reapOrphanedJobs();
+  if (orphans) console.log(`[jobs] failed ${orphans} job(s) orphaned by a restart`);
 
   // Eagerly bring up Cardano so cardanoReady() is true from the start (enables
   // CIP-68 minting on execute). Non-fatal: an unfunded/misconfigured wallet just

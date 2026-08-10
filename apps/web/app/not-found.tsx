@@ -1,5 +1,6 @@
 import React from "react";
 import Image from "next/image";
+import Link from "next/link";
 import DashboardPageLayout from "@/components/dashboard/layout";
 import CuteRobotIcon from "@/components/icons/cute-robot";
 
@@ -24,10 +25,25 @@ export default function NotFound() {
           />
         </picture>
 
-        <div className="flex flex-col items-center justify-center gap-2">
+        {/* A 404 with no way out is a dead end; give both destinations. */}
+        <div className="flex flex-col items-center justify-center gap-4">
           <h1 className="text-xl font-bold uppercase text-muted-foreground">
             Not found, yet
           </h1>
+          <div className="flex items-center gap-3">
+            <Link
+              href="/"
+              className="rounded-md border border-border px-3 py-1.5 text-xs uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground"
+            >
+              Trading terminal
+            </Link>
+            <Link
+              href="/mev"
+              className="rounded-md border border-success/40 bg-success/5 px-3 py-1.5 text-xs uppercase tracking-wider text-success transition-colors hover:bg-success/10"
+            >
+              MEV Shield
+            </Link>
+          </div>
         </div>
       </div>
     </DashboardPageLayout>

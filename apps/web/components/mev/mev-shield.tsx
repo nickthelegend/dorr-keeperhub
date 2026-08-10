@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -55,7 +55,7 @@ function Stat({
  * happened on Sepolia — no annualising, no extrapolation from a single sample.
  */
 export function MevShield() {
-  const { data: status } = useMevStatus();
+  const { data: status, isError: statusError } = useMevStatus();
   const { data: board } = useMevLeaderboard();
   const { data: duels } = useMevDuels(25);
   const qc = useQueryClient();
@@ -63,12 +63,50 @@ export function MevShield() {
   const [amountIn, setAmountIn] = useState("10");
   const [slippageBps, setSlippageBps] = useState("100");
   const [jobId, setJobId] = useState<string>();
+  // Set the instant the button is pressed. `running` only becomes true once the
+  // job id round-trips, and a double-click fits comfortably inside that gap —
+  // the server rejects the duplicates with 409, but the user sees their own
+  // impatience reported back as two red errors.
+  const [starting, setStarting] = useState(false);
+  // React state cannot guard re-entry: several clicks dispatched before the
+  // next render all observe the old value. A ref updates synchronously, so the
+  // second click of a double-click is refused inside the same tick.
+  const inFlight = useRef(false);
   const { data: job } = useJob(jobId);
 
-  const running = job?.status === "running";
+  // Trust the operator, not just this tab's job handle: a reload loses `jobId`
+  // but the duel keeps running, and a re-enabled button would walk straight
+  // into a 409 that reads like a broken app.
+  const running = job?.status === "running" || Boolean(status?.duelRunning);
   const latest = duels?.[0];
 
+  /**
+   * Validate before submitting, mirroring the operator's own rules.
+   *
+   * The server is still the authority — it re-checks everything and owns the
+   * pool-size limit, which the client cannot know. This exists so an obvious
+   * typo is answered instantly and in place, instead of via a round-trip and a
+   * toast that has vanished by the time you look up.
+   */
+  const size = Number(amountIn);
+  const slip = Number(slippageBps);
+  const maxSize = status ? Number(status.reserveBase) / 4 : undefined;
+  const amountError =
+    amountIn.trim() === "" || !Number.isFinite(size) || size <= 0
+      ? "enter a positive amount"
+      : maxSize !== undefined && size > maxSize
+        ? `too large for this pool — keep it under ${maxSize.toFixed(0)} mETH`
+        : undefined;
+  const slippageError =
+    !Number.isInteger(slip) || slip < 1 || slip > 5000
+      ? "whole number, 1–5000"
+      : undefined;
+  const invalid = Boolean(amountError || slippageError);
+
   const start = async () => {
+    if (invalid || inFlight.current || running) return;
+    inFlight.current = true;
+    setStarting(true);
     try {
       const { jobId: id } = await mevApi.runDuel({
         amountIn,
@@ -82,6 +120,8 @@ export function MevShield() {
       toast.error("Could not start the duel", {
         description: e instanceof Error ? e.message : String(e),
       });
+      inFlight.current = false;
+      setStarting(false);
     }
   };
 
@@ -90,6 +130,8 @@ export function MevShield() {
   const finished = Boolean(jobId && job && job.status !== "running");
   useEffect(() => {
     if (!finished) return;
+    inFlight.current = false;
+    setStarting(false);
     qc.invalidateQueries({ queryKey: ["mev", "leaderboard"] });
     qc.invalidateQueries({ queryKey: ["mev", "duels", 25] });
   }, [finished, qc]);
@@ -109,6 +151,44 @@ export function MevShield() {
           number below came off chain.
         </p>
       </div>
+
+      {/*
+        Distinguish "the backend is down" from "no duels yet". Without this the
+        page renders a fully-formed dashboard of zeros, which reads as "this
+        project has no results" rather than "start the operator" — the worst
+        possible misreading for someone evaluating it.
+      */}
+      {statusError && (
+        <Card className="border-destructive/50">
+          <CardContent className="space-y-1 py-3">
+            <p className="text-xs font-medium text-destructive">Operator unreachable</p>
+            <p className="text-[11px] text-muted-foreground">
+              Nothing below is live. Start it with{" "}
+              <code className="font-mono">bun run --cwd services/operator start</code>, then
+              reload. The figures shown are placeholders, not measured results.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/*
+        A broke searcher cannot attack, so the public lane reports $0 lost and
+        the private lane appears to win by default. That is the most flattering
+        way this lab can be wrong, so say it out loud.
+      */}
+      {status?.configured && status.searcherFunded === false && (
+        <Card className="border-warning/50">
+          <CardContent className="space-y-1 py-3">
+            <p className="text-xs font-medium text-warning">Searcher is out of gas</p>
+            <p className="text-[11px] text-muted-foreground">
+              The attacker pays for its own transactions and has{" "}
+              {status.searcherGasEth?.toFixed(5) ?? "0"} ETH left, so it cannot land a sandwich.
+              Until it is funded, a $0 public-lane result means the attack never ran — not that
+              the trade was safe.
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       {status && !status.configured && (
         <Card className="border-warning/50">
@@ -168,9 +248,13 @@ export function MevShield() {
               <Input
                 value={amountIn}
                 onChange={(e) => setAmountIn(e.target.value)}
-                className="h-9 w-28 font-mono text-xs"
+                aria-invalid={Boolean(amountError)}
+                className={cn("h-9 w-28 font-mono text-xs", amountError && "border-destructive")}
                 inputMode="decimal"
               />
+              {amountError && (
+                <span className="block text-[10px] text-destructive">{amountError}</span>
+              )}
             </label>
             <label className="space-y-1">
               <span className="block text-[10px] uppercase tracking-wider text-muted-foreground">
@@ -179,13 +263,25 @@ export function MevShield() {
               <Input
                 value={slippageBps}
                 onChange={(e) => setSlippageBps(e.target.value)}
-                className="h-9 w-28 font-mono text-xs"
+                aria-invalid={Boolean(slippageError)}
+                className={cn("h-9 w-28 font-mono text-xs", slippageError && "border-destructive")}
                 inputMode="numeric"
               />
+              {slippageError && (
+                <span className="block text-[10px] text-destructive">{slippageError}</span>
+              )}
             </label>
-            <Button onClick={start} disabled={running || !status?.configured} className="h-9 gap-2">
-              {running ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-              {running ? "Running…" : "Run the duel"}
+            <Button
+              onClick={start}
+              disabled={running || starting || invalid || !status?.configured}
+              className="h-9 gap-2"
+            >
+              {running || starting ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Play className="h-4 w-4" />
+              )}
+              {running || starting ? "Running…" : "Run the duel"}
             </Button>
           </div>
 

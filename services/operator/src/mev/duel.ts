@@ -200,7 +200,13 @@ async function runLane(o: LaneOpts): Promise<LaneResult> {
       result.executionId = exec.executionId;
       txHash = exec.transactions[0]?.hash;
       if (!txHash) {
-        result.error = exec.error || `private workflow ended in "${exec.status}" with no transaction`;
+        // Distinguish "still in flight" from "failed": a workflow that is
+        // simply slow should not be reported as a private-lane failure.
+        result.error =
+          exec.error ??
+          (exec.status === "running"
+            ? "private workflow was still executing when we stopped waiting — it may yet land"
+            : `private workflow ended in "${exec.status}" with no transaction`);
         return result;
       }
       result.transactionLink = `${env.eth.explorer}/tx/${txHash}`;

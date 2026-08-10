@@ -45,6 +45,18 @@ const bad = (c: Context, msg: string, code: ContentfulStatusCode = 400) =>
   c.json({ error: msg }, code);
 
 /**
+ * The first line of an error, for surfacing to a caller.
+ *
+ * Library errors (viem especially) are multi-paragraph, carry a `Version:`
+ * footer, and sometimes embed the whole request. That belongs in the operator's
+ * logs, not in an HTTP response a user reads.
+ */
+function firstLine(e: unknown): string {
+  const msg = e instanceof Error ? e.message : String(e);
+  return msg.split("\n")[0].slice(0, 200);
+}
+
+/**
  * Gate a value-moving action on a wallet signature. Returns an error string to
  * reject with, or null to proceed. No-op when auth isn't required (dev). The
  * client signs authMessage(action, params, ts) and sends body.auth = {signer, ts, sig}.
@@ -425,6 +437,22 @@ app.post("/demo/seed", async (c) => {
   return c.json({ ok: true, address, balance: acct.balance });
 });
 
+/**
+ * Coerce a demo parameter to a usable number.
+ *
+ * `Number(body.x || fallback)` is not enough: a non-numeric string yields NaN,
+ * which then flows through the whole simulation and surfaces in the narration a
+ * judge actually reads — "Order spotted IN THE CLEAR: LONG NaN FLR · NaNx". A
+ * negative margin is just as bad, producing a negative position size. Demos are
+ * illustrative, so clamp rather than reject: the point is that they always show
+ * something sensible.
+ */
+function demoNumber(raw: unknown, fallback: number, min: number, max: number): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.min(Math.max(n, min), max);
+}
+
 // ─── A/B anti-front-running demo (deterministic, fund-free) ──────────────────
 app.post("/demo/ab", async (c) => {
   const body = await c.req.json().catch(() => ({}));
@@ -432,9 +460,9 @@ app.post("/demo/ab", async (c) => {
     const result = runAbDemo({
       marketId: String(body.marketId || "FLR-USD"),
       side: body.side === "SHORT" ? "SHORT" : "LONG",
-      marginUsd: Number(body.marginUsd || 1000),
-      leverage: Number(body.leverage || 10),
-      botMultiple: body.botMultiple ? Number(body.botMultiple) : undefined,
+      marginUsd: demoNumber(body.marginUsd, 1000, 1, 10_000_000),
+      leverage: demoNumber(body.leverage, 10, 1, 100),
+      botMultiple: body.botMultiple != null ? demoNumber(body.botMultiple, 3, 1, 100) : undefined,
       mode: body.mode === "live" ? "live" : "sim",
     });
     return c.json(result);
@@ -451,9 +479,9 @@ app.post("/demo/attack", async (c) => {
       runAttackLab({
         marketId: String(body.marketId || "FLR-USD"),
         side: body.side === "SHORT" ? "SHORT" : "LONG",
-        marginUsd: Number(body.marginUsd || 1000),
-        leverage: Number(body.leverage || 10),
-        botMultiple: body.botMultiple ? Number(body.botMultiple) : undefined,
+        marginUsd: demoNumber(body.marginUsd, 1000, 1, 10_000_000),
+        leverage: demoNumber(body.leverage, 10, 1, 100),
+        botMultiple: body.botMultiple != null ? demoNumber(body.botMultiple, 3, 1, 100) : undefined,
       }),
     );
   } catch (e) {
@@ -469,9 +497,9 @@ app.post("/demo/batch", async (c) => {
       runBatchAuctionDemo({
         marketId: String(body.marketId || "FLR-USD"),
         side: body.side === "SHORT" ? "SHORT" : "LONG",
-        marginUsd: body.marginUsd != null ? Number(body.marginUsd) : undefined,
-        leverage: body.leverage != null ? Number(body.leverage) : undefined,
-        botMultiple: body.botMultiple != null ? Number(body.botMultiple) : undefined,
+        marginUsd: body.marginUsd != null ? demoNumber(body.marginUsd, 1000, 1, 10_000_000) : undefined,
+        leverage: body.leverage != null ? demoNumber(body.leverage, 10, 1, 100) : undefined,
+        botMultiple: body.botMultiple != null ? demoNumber(body.botMultiple, 3, 1, 100) : undefined,
       }),
     );
   } catch (e) {
@@ -510,8 +538,8 @@ app.post("/demo/sealed", async (c) => {
       await runSealedDemo({
         marketId: String(body.marketId || "FLR-USD"),
         side: body.side === "SHORT" ? "SHORT" : "LONG",
-        marginUsd: body.marginUsd != null ? Number(body.marginUsd) : undefined,
-        leverage: body.leverage != null ? Number(body.leverage) : undefined,
+        marginUsd: body.marginUsd != null ? demoNumber(body.marginUsd, 1000, 1, 10_000_000) : undefined,
+        leverage: body.leverage != null ? demoNumber(body.leverage, 10, 1, 100) : undefined,
       }),
     );
   } catch (e) {
@@ -619,20 +647,33 @@ app.get("/flare/info", async (c) => {
 // a settled epoch as recorded on Flare
 app.get("/flare/batch/:epochId", async (c) => {
   if (!flareConfigured()) return bad(c, "Flare contracts not configured", 503);
+  const epochId = c.req.param("epochId");
+  // Reject the wrong shape here rather than letting viem's ABI encoder do it.
+  // It throws a multi-line, versioned internal error ("Size of bytes … does not
+  // match expected size (bytes32). Version: viem@…") which we were returning
+  // verbatim as a 500 — a stack trace in the response body, and a leak of the
+  // dependency stack, for what is simply a malformed path parameter.
+  if (!/^0x[0-9a-fA-F]{64}$/.test(epochId)) {
+    return bad(c, "epochId must be a 32-byte hex string (0x + 64 hex characters)");
+  }
   try {
-    return c.json(await getBatchOnChain(c.req.param("epochId") as `0x${string}`));
+    return c.json(await getBatchOnChain(epochId as `0x${string}`));
   } catch (e) {
-    return bad(c, String(e instanceof Error ? e.message : e), 500);
+    return bad(c, `could not read epoch ${epochId.slice(0, 12)}…: ${firstLine(e)}`, 502);
   }
 });
 
 // a trader's on-chain FXRP margin account
 app.get("/flare/account/:address", async (c) => {
   if (!flareConfigured()) return bad(c, "Flare contracts not configured", 503);
+  const address = c.req.param("address");
+  if (!/^0x[0-9a-fA-F]{40}$/.test(address)) {
+    return bad(c, "address must be a 20-byte hex address (0x + 40 hex characters)");
+  }
   try {
-    return c.json(await vaultAccount(c.req.param("address")));
+    return c.json(await vaultAccount(address));
   } catch (e) {
-    return bad(c, String(e instanceof Error ? e.message : e), 500);
+    return bad(c, `could not read the vault account: ${firstLine(e)}`, 502);
   }
 });
 

@@ -700,8 +700,13 @@ export interface MevStatus {
   midPriceUsd: number;
   searcher: string | null;
   searcherArmed: boolean;
+  searcherGasEth?: number;
+  /** False once the adversary can no longer pay for its own attacks. */
+  searcherFunded?: boolean;
   trader: string | null;
   privateLaneReady: boolean;
+  /** A duel is in flight on the operator — true even for clients that just loaded. */
+  duelRunning?: boolean;
   note: string;
 }
 

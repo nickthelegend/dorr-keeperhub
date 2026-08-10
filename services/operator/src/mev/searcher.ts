@@ -25,6 +25,7 @@ import {
   createPublicClient,
   createWalletClient,
   decodeFunctionData,
+  formatEther,
   http,
   toFunctionSelector,
   type Address,
@@ -119,6 +120,21 @@ export interface SandwichAttempt {
 }
 
 type VictimHandler = (a: SandwichAttempt) => void;
+
+/**
+ * Compress a chain error into one line a person can read.
+ *
+ * viem throws multi-paragraph errors carrying the full request — calldata, gas
+ * settings, decoded arguments, a docs URL. Stored verbatim, that lands in the
+ * duel record and then straight into the UI, where it both reads as a crash and
+ * blows out the card's layout. The first line is the part that says what
+ * actually went wrong.
+ */
+function readableError(e: unknown): string {
+  const raw = e instanceof Error ? e.message : String(e);
+  const first = raw.split("\n").map((l) => l.trim()).find(Boolean) ?? "unknown error";
+  return first.slice(0, 160);
+}
 
 export class Searcher {
   private ws?: WebSocket;
@@ -376,6 +392,20 @@ export class Searcher {
       const baseFee = block.baseFeePerGas ?? 1_000_000_000n;
       const maxFee = baseFee * 2n + priority;
 
+      // Check gas before signing. Bidding 25x priority drains a testnet wallet
+      // over a run of duels, and the resulting failure is a page of viem revert
+      // data that says "gas required exceeds allowance" — true, but it reads as
+      // a bug in the lab rather than an empty wallet. Say which it is.
+      const gasBudget = maxFee * 400_000n; // both legs, generously
+      const gasBalance = await this.publicClient.getBalance({ address: this.account.address });
+      if (gasBalance < gasBudget) {
+        attempt.error =
+          `searcher is out of gas (${formatEther(gasBalance)} ETH) — ` +
+          `fund ${this.account.address} with Sepolia ETH to re-arm the attacker`;
+        this.handler?.(attempt);
+        return;
+      }
+
       const balBefore = inventory;
 
       const frontHash = await this.wallet.writeContract({
@@ -438,7 +468,7 @@ export class Searcher {
 
       attempt.profit = ((await balanceOf(tokenIn)) - balBefore).toString();
     } catch (e) {
-      attempt.error = e instanceof Error ? e.message : String(e);
+      attempt.error = readableError(e);
     }
     this.handler?.(attempt);
   }

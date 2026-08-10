@@ -111,7 +111,7 @@ export function LaneCard({
       <Card className="h-full border-destructive/40">
         <PanelHeader title={title} bullet="warning" />
         <CardContent className="space-y-2">
-          <p className="text-xs text-destructive break-words">{lane.error}</p>
+          <p className="line-clamp-4 text-xs break-words text-destructive">{lane.error}</p>
           <p className="text-[10px] text-muted-foreground">
             This lane did not complete, so no saving is claimed for this duel.
           </p>
@@ -167,7 +167,11 @@ export function LaneCard({
               <Row label="Searcher reacted in" value={`${lane.sandwich.reactionMs} ms`} />
             )}
             {lane.sandwich.error && (
-              <p className="py-1 text-[10px] text-muted-foreground">{lane.sandwich.error}</p>
+              // Chain errors can be long even after truncation; wrap and clamp
+              // so a failure can never blow out the card's width.
+              <p className="line-clamp-3 py-1 text-[10px] break-words text-muted-foreground">
+                {lane.sandwich.error}
+              </p>
             )}
           </>
         )}
