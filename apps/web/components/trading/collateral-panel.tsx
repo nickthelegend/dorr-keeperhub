@@ -9,7 +9,7 @@ import { Bullet } from "@/components/ui/bullet";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
 import { Loader2, Droplets, ArrowDownToLine, ArrowUpFromLine, ExternalLink, Vault } from "lucide-react";
-import { cn, formatUsd, truncateHash } from "@/lib/core";
+import { cn, formatUsd, truncateHash, readableError } from "@/lib/core";
 import { useDorrWallet } from "@/hooks/use-dorr-wallet";
 import { useAccount, useInvalidateTrading } from "@/hooks/use-operator";
 import { operator } from "@/lib/operator";
@@ -108,8 +108,7 @@ export default function CollateralPanel() {
       toast.success(`Deposited ${n} FXRP`, { description: truncateHash(txHash) });
       invalidate(address);
     } catch (e: any) {
-      const msg = String(e?.shortMessage ?? e?.message ?? e);
-      toast.error("Deposit failed", { description: msg.slice(0, 200) });
+      toast.error("Deposit failed", { description: readableError(e) });
     } finally {
       setDepositing(false);
       setDepositStage(null);
@@ -141,8 +140,7 @@ export default function CollateralPanel() {
       setWithdrawAmt("");
       invalidate(address);
     } catch (e: any) {
-      const msg = String(e?.shortMessage ?? e?.message ?? e);
-      toast.error("Withdraw failed", { description: msg.slice(0, 200) });
+      toast.error("Withdraw failed", { description: readableError(e) });
     } finally {
       setWithdrawing(false);
     }

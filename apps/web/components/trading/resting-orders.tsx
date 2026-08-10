@@ -7,7 +7,7 @@ import { PanelHeader } from "./panel-header";
 import { Badge } from "@/components/ui/badge";
 import { motion, AnimatePresence } from "framer-motion";
 import { Clock, EyeOff, TrendingUp, TrendingDown, X, Loader2 } from "lucide-react";
-import { cn, formatUsd, formatTimestamp, truncateHash } from "@/lib/core";
+import { cn, formatUsd, formatTimestamp, truncateHash, readableError } from "@/lib/core";
 import { useDorrWallet } from "@/hooks/use-dorr-wallet";
 import { useRestingOrders, useInvalidateTrading } from "@/hooks/use-operator";
 import { operator, type RestingOrder } from "@/lib/operator";
@@ -27,7 +27,7 @@ function RestingRow({ order, address }: { order: RestingOrder; address?: string 
       });
       invalidate(address);
     } catch (e: any) {
-      toast.error("Cancel failed", { description: String(e?.message ?? e) });
+      toast.error("Cancel failed", { description: readableError(e) });
       setCancelling(false);
     }
     // on success the row unmounts (list refetch) — no need to reset state

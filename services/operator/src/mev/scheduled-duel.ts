@@ -27,6 +27,7 @@ import { sepolia } from "viem/chains";
 import { env } from "../env.js";
 import { POOL_ABI } from "./artifacts.js";
 import { observer, observerConnectedSince } from "./observer.js";
+import { agentVerdicts, recordAgentVerdict } from "./db.js";
 
 const BASE = env.keeperhub.baseUrl;
 
@@ -181,7 +182,17 @@ export interface AgentRun {
 
 /**
  * Recent agent runs, each audited against the observer's own record.
+ *
+ * Two things keep this fast enough to poll. Runs are resolved concurrently
+ * rather than in a loop — each one costs a KeeperHub status call plus two
+ * Sepolia reads, and doing ten of those sequentially took eight seconds, which
+ * is a hang, not a delay. And a run that has reached a terminal state can never
+ * change its verdict, so it is cached: after the first load only new or still
+ * -pending runs cost anything.
  */
+const settled = new Map<string, AgentRun>();
+const TERMINAL = new Set(["success", "completed", "error", "failed"]);
+
 export async function agentRuns(limit = 10): Promise<AgentRun[]> {
   const id = env.keeperhub.scheduledWorkflowId;
   if (!id) return [];
@@ -196,48 +207,63 @@ export async function agentRuns(limit = 10): Promise<AgentRun[]> {
   const watchingSince = observerConnectedSince();
   const pc = createPublicClient({ chain: sepolia, transport: http(env.eth.rpcUrl) });
   const obs = watchingSince !== undefined ? observer() : undefined;
+  // Verdicts reached in an earlier process are still valid evidence.
+  const known = agentVerdicts();
 
-  const out: AgentRun[] = [];
-  for (const e of executions) {
-    const { body: st } = await api<any>(`/api/workflows/executions/${e.id}/status`);
-    const tx = (st?.transactionHashes ?? [])[0];
-    const hash: Hex | undefined = typeof tx === "string" ? (tx as Hex) : tx?.hash;
+  return Promise.all(
+    executions.map(async (e): Promise<AgentRun> => {
+      const cached = settled.get(e.id);
+      if (cached) return cached;
 
-    const run: AgentRun = {
-      executionId: e.id,
-      status: String(st?.status ?? e.status),
-      startedAt: e.startedAt,
-      transactionHash: hash,
-      blockNumber: tx?.blockNumber,
-      seenInMempool: null,
-    };
+      const { body: st } = await api<any>(`/api/workflows/executions/${e.id}/status`);
+      const tx = (st?.transactionHashes ?? [])[0];
+      const hash: Hex | undefined = typeof tx === "string" ? (tx as Hex) : tx?.hash;
 
-    if (hash) {
-      try {
-        const receipt = await pc.getTransactionReceipt({ hash });
-        run.blockNumber = Number(receipt.blockNumber);
-        const block = await pc.getBlock({ blockNumber: receipt.blockNumber });
-        const minedAt = Number(block.timestamp) * 1000;
-        // Only judge runs that happened while we were actually watching.
-        if (obs && watchingSince && minedAt >= watchingSince) {
-          run.seenInMempool = Boolean(obs.sawInMempool(hash));
-        }
-        for (const log of receipt.logs) {
-          if (log.address.toLowerCase() !== (env.mev.pool as string).toLowerCase()) continue;
-          try {
-            const d = decodeEventLog({ abi: POOL_ABI, data: log.data, topics: log.topics });
-            if (d.eventName === "Swap") {
-              run.amountOut = formatUnits((d.args as unknown as { amountOut: bigint }).amountOut, 18);
-            }
-          } catch {
-            /* not the Swap event */
+      const run: AgentRun = {
+        executionId: e.id,
+        status: String(st?.status ?? e.status),
+        startedAt: e.startedAt,
+        transactionHash: hash,
+        blockNumber: tx?.blockNumber,
+        seenInMempool: null,
+      };
+
+      if (hash) {
+        try {
+          const receipt = await pc.getTransactionReceipt({ hash });
+          run.blockNumber = Number(receipt.blockNumber);
+          const block = await pc.getBlock({ blockNumber: receipt.blockNumber });
+          const minedAt = Number(block.timestamp) * 1000;
+          // Only judge runs that happened while we were actually watching.
+          if (obs && watchingSince && minedAt >= watchingSince) {
+            run.seenInMempool = Boolean(obs.sawInMempool(hash));
+            recordAgentVerdict(e.id, hash, run.seenInMempool);
+          } else if (known.has(e.id)) {
+            // Judged while a previous process was watching.
+            run.seenInMempool = known.get(e.id)!;
           }
+          for (const log of receipt.logs) {
+            if (log.address.toLowerCase() !== (env.mev.pool as string).toLowerCase()) continue;
+            try {
+              const d = decodeEventLog({ abi: POOL_ABI, data: log.data, topics: log.topics });
+              if (d.eventName === "Swap") {
+                run.amountOut = formatUnits((d.args as unknown as { amountOut: bigint }).amountOut, 18);
+              }
+            } catch {
+              /* not the Swap event */
+            }
+          }
+        } catch {
+          /* receipt not available yet */
         }
-      } catch {
-        /* receipt not available yet */
       }
-    }
-    out.push(run);
-  }
-  return out;
+
+      // Cache only once the run can no longer change. A pending run re-resolves
+      // next time; a finished one is a fact.
+      if (TERMINAL.has(run.status) && (!hash || run.blockNumber !== undefined)) {
+        settled.set(e.id, run);
+      }
+      return run;
+    }),
+  );
 }

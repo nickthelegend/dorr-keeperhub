@@ -7,6 +7,7 @@ import localFont from "next/font/local";
 import { QueryProvider } from "@/components/providers/query-provider";
 import { MarketProvider } from "@/context/market-context";
 import { Toaster } from "@/components/ui/sonner";
+import { WalletProvider } from "@/components/providers/wallet-provider";
 import { ThemeProvider } from "@/components/theme-provider";
 
 const robotoMono = Roboto_Mono({
@@ -63,10 +64,12 @@ export default function RootLayout({
             disableTransitionOnChange
           >
             <QueryProvider>
+              <WalletProvider>
               <MarketProvider>
                 <div className="min-h-screen bg-background">{children}</div>
                 <Toaster />
               </MarketProvider>
+              </WalletProvider>
             </QueryProvider>
           </ThemeProvider>
         </V0Provider>

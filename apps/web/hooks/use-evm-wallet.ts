@@ -57,6 +57,35 @@ export function useEvmWallet(): EvmWallet {
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Injected providers are not always present at first paint: extensions inject
+  // asynchronously, and a user can install or unlock one with the tab already
+  // open. `available` is read during render, so without this the app decides
+  // "no wallet" once and never reconsiders — and since the wallet lives in a
+  // root-layout provider that never remounts, that verdict is permanent.
+  const [providerTick, setProviderTick] = useState(0);
+  useEffect(() => {
+    if (provider()) return;
+    // EIP-6963: the modern announcement channel.
+    const onAnnounce = () => setProviderTick((n) => n + 1);
+    window.addEventListener("eip6963:announceProvider", onAnnounce);
+    window.dispatchEvent(new Event("eip6963:requestProvider"));
+    // Fallback for wallets that only set window.ethereum. Bounded, so a page
+    // with no wallet at all does not poll forever.
+    let tries = 0;
+    const timer = setInterval(() => {
+      if (provider()) {
+        setProviderTick((n) => n + 1);
+        clearInterval(timer);
+      } else if (++tries > 20) {
+        clearInterval(timer);
+      }
+    }, 500);
+    return () => {
+      window.removeEventListener("eip6963:announceProvider", onAnnounce);
+      clearInterval(timer);
+    };
+  }, [providerTick]);
+
   const available = typeof window !== "undefined" && !!provider();
 
   const readChain = useCallback(async () => {
@@ -96,7 +125,7 @@ export function useEvmWallet(): EvmWallet {
       p.removeListener?.("accountsChanged", onAccounts);
       p.removeListener?.("chainChanged", onChain);
     };
-  }, [readChain]);
+  }, [readChain, providerTick]);
 
   const connect = useCallback(async () => {
     const p = provider();
@@ -116,7 +145,7 @@ export function useEvmWallet(): EvmWallet {
     } finally {
       setConnecting(false);
     }
-  }, [readChain]);
+  }, [readChain, providerTick]);
 
   const disconnect = useCallback(() => {
     setAddress(undefined);
@@ -151,7 +180,7 @@ export function useEvmWallet(): EvmWallet {
       }
     }
     await readChain();
-  }, [readChain]);
+  }, [readChain, providerTick]);
 
   const walletClient = useMemo(() => {
     const p = provider();

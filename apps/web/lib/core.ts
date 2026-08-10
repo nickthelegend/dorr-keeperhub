@@ -37,3 +37,37 @@ export function formatTimestamp(iso: string): string {
     return iso;
   }
 }
+
+/**
+ * Turn a thrown value into something a person can read.
+ *
+ * Wallet and RPC libraries throw multi-paragraph errors with a `Details:` line,
+ * a `Version: viem@x.y.z` footer, and sometimes the whole request. Surfaced
+ * verbatim in a toast — which is what every call site used to do — a user who
+ * simply clicked "reject" in their wallet was told:
+ *
+ *   "User rejected the request. Details: user rejected Version: viem@2.55.13"
+ *
+ * Declining is a normal action, not a failure, and the library version is not
+ * the user's problem. This collapses the common wallet cases to plain language
+ * and otherwise keeps just the first line.
+ */
+export function readableError(e: unknown): string {
+  const raw =
+    typeof e === "string"
+      ? e
+      : ((e as { shortMessage?: string })?.shortMessage ??
+        (e as { message?: string })?.message ??
+        String(e));
+  const code = (e as { code?: number })?.code;
+
+  if (code === 4001 || /user rejected|user denied|rejected the request/i.test(raw)) {
+    return "You rejected the request in your wallet.";
+  }
+  if (code === 4900 || /disconnected/i.test(raw)) return "Your wallet is disconnected.";
+  if (/insufficient funds/i.test(raw)) return "Not enough funds to cover this transaction and its gas.";
+  if (/chain mismatch|chain id|wrong network/i.test(raw)) return "Your wallet is on the wrong network.";
+
+  // Otherwise: first line only, without the library's version footer.
+  return raw.split("\n").map((l) => l.trim()).filter(Boolean)[0]?.replace(/\s*Version:.*$/i, "").slice(0, 180) ?? "Something went wrong.";
+}

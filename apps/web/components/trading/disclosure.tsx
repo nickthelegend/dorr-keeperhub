@@ -30,7 +30,7 @@ import {
   KeyRound,
 } from "lucide-react";
 import { toast } from "sonner";
-import { cn } from "@/lib/core";
+import { cn, readableError } from "@/lib/core";
 import { operator, type Disclosure, type DisclosureVerdict, type Position } from "@/lib/operator";
 
 function CopyButton({ text }: { text: string }) {
@@ -86,7 +86,7 @@ function DiscloseTab({ position }: { position?: Position }) {
       const d = await operator.disclose(position.orderId, audience.trim() || "auditor");
       setDisclosure(d);
     } catch (e: any) {
-      setError(String(e?.message ?? e));
+      setError(readableError(e));
     } finally {
       setBusy(false);
     }
@@ -205,7 +205,7 @@ function VerifyTab({ initial }: { initial?: string }) {
       const v = await operator.verifyDisclosure(parsed);
       setVerdict(v);
     } catch (e: any) {
-      setError(String(e?.message ?? e));
+      setError(readableError(e));
     } finally {
       setBusy(false);
     }

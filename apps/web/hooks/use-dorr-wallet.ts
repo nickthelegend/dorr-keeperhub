@@ -1,30 +1,20 @@
 "use client";
 
-import { useEffect } from "react";
-import { setWalletSigner, evmSigner } from "@/lib/operator";
-import { useEvmWallet } from "./use-evm-wallet";
+import { useSharedWallet } from "@/components/providers/wallet-provider";
 
 /**
  * dorr's wallet handle.
  *
- * Now backed by an EVM wallet on Flare Coston2 — dorr settles on Flare and
- * margins in FXRP (an ERC-20), so a Cardano CIP-30 wallet could neither hold the
- * collateral nor sign a settlement transaction. The shape of this hook is
- * unchanged so every consumer keeps working.
+ * Backed by an EVM wallet on Flare Coston2 — dorr settles on Flare and margins
+ * in FXRP (an ERC-20), so the acting identity has to be an EVM account.
+ *
+ * This used to instantiate `useEvmWallet()` directly, which gave every calling
+ * component its own private copy of the connection state. It now reads the one
+ * shared instance from `WalletProvider`; see there for what that was breaking.
+ * The shape is unchanged, so consumers did not have to move.
  */
 export function useDorrWallet() {
-  const evm = useEvmWallet();
-
-  // Register a signer so value-moving operator calls are authenticated
-  // (EIP-191 personal_sign). Cleared on disconnect.
-  useEffect(() => {
-    if (evm.connected && evm.address && evm.walletClient) {
-      setWalletSigner(evmSigner(evm.walletClient, evm.address));
-    } else {
-      setWalletSigner(null);
-    }
-    return () => setWalletSigner(null);
-  }, [evm.connected, evm.address, evm.walletClient]);
+  const evm = useSharedWallet();
 
   return {
     walletName: evm.connected ? "evm" : undefined,

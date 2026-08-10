@@ -59,6 +59,20 @@ export function database(): Database {
       sandwich_landed INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS duels_at ON duels (at DESC);
+
+    -- Verdicts on the autonomous agent's runs.
+    --
+    -- Persisted because a verdict is a fact about a moment that has passed: we
+    -- either saw that hash in the mempool while watching, or we watched and did
+    -- not. Holding it only in memory meant an operator restart silently
+    -- downgraded real evidence back to "unobserved", which reads as though the
+    -- audit never happened.
+    CREATE TABLE IF NOT EXISTS agent_audit (
+      execution_id   TEXT PRIMARY KEY,
+      tx_hash        TEXT,
+      seen_in_mempool INTEGER NOT NULL,
+      judged_at      TEXT NOT NULL
+    );
   `);
 
   importLegacyJson(db);
@@ -119,6 +133,24 @@ export function insertDuelRow(handle: Database, d: any): void {
       priv?.seenInMempool ? 1 : 0,
       pub?.sandwich?.landed ? 1 : 0,
     );
+}
+
+/** Record a privacy verdict for an agent run. Only called when we were watching. */
+export function recordAgentVerdict(executionId: string, txHash: string | undefined, seen: boolean): void {
+  database()
+    .query(
+      `INSERT OR REPLACE INTO agent_audit (execution_id, tx_hash, seen_in_mempool, judged_at)
+       VALUES (?,?,?,?)`,
+    )
+    .run(executionId, txHash ?? null, seen ? 1 : 0, new Date().toISOString());
+}
+
+/** Previously-recorded verdicts, keyed by execution id. */
+export function agentVerdicts(): Map<string, boolean> {
+  const rows = database()
+    .query(`SELECT execution_id, seen_in_mempool FROM agent_audit`)
+    .all() as unknown as Array<{ execution_id: string; seen_in_mempool: number }>;
+  return new Map(rows.map((r) => [r.execution_id, Boolean(r.seen_in_mempool)]));
 }
 
 /** Close the handle — used by tests that open a database per case. */
