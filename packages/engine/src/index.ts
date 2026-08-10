@@ -1,23 +1,13 @@
 /**
- * @dorr/engine — off-chain perps engine (imported from the ZKPerps research repo).
- * Matching, margin, funding, liquidation, settlement, order commitments, Cardano connector.
+ * @dorr/engine — the order-commitment primitive.
+ *
+ * This package began as a broad off-chain perps engine imported from the
+ * ZKPerps research repo: matching, margin, funding, liquidation, and a Cardano
+ * connector. MEV Shield uses exactly one piece of it — the order commitment —
+ * and the rest was Cardano-era code that nothing here imported. It also carried
+ * the last placeholders in the repository (a stand-in insurance-fund address, a
+ * deterministic "ZK proof" for harness use, a placeholder Pedersen commitment),
+ * which is a poor thing to leave lying around in a project whose whole argument
+ * is that its numbers are real. Removed rather than explained away.
  */
-export * from "./common/types.js";
-export * from "./common/constants.js";
-export * from "./common/errors.js";
-export * as utils from "./common/utils.js";
-
 export * from "./order/commitment.js";
-
-export { PrivateOrderBook } from "./matching/order_book.js";
-export { OrderMatcher } from "./matching/order_matcher.js";
-
-export { SettlementEngine } from "./settlement/settlement_engine.js";
-export { MarginManager } from "./settlement/margin_manager.js";
-export { LiquidationEngine } from "./settlement/liquidation_engine.js";
-export * as funding from "./settlement/funding_rate.js";
-export { CardanoConnector } from "./settlement/cardano_connector.js";
-
-export * as settlementAnchor from "./cardano/settlement_anchor.js";
-export * as lucidWallet from "./cardano/lucid_wallet.js";
-export * as cardanoEnv from "./config/cardano_env.js";
