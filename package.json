@@ -1,0 +1,17 @@
+{
+  "name": "dorr-keeperhub",
+  "private": true,
+  "version": "0.1.0",
+  "description": "MEV Shield \u2014 measure the private lane. Runs the same swap through the public mempool and through KeeperHub private routing, and prices the difference in dollars.",
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "services/*",
+    "tools/*"
+  ],
+  "scripts": {
+    "web": "bun run --cwd apps/web dev",
+    "operator": "bun run --cwd services/operator dev",
+    "gen:wallet": "bun run tools/scripts/gen-wallet.ts"
+  }
+}
