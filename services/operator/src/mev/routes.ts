@@ -17,6 +17,7 @@ import * as kh from "./keeperhub.js";
 import { getDuel, leaderboard, listDuels } from "./store.js";
 import { observerStatus, subscribe, type FeedEvent } from "./observer.js";
 import { agentRuns } from "./scheduled-duel.js";
+import { extractionCurve } from "./extraction.js";
 
 export const mev = new Hono();
 
@@ -267,6 +268,24 @@ mev.get("/mev/agent", async (c) => {
 
 /** Observer health, for the UI to show whether the feed is genuinely live. */
 mev.get("/mev/observer", (c) => c.json(observerStatus()));
+
+/**
+ * What each slippage tolerance is worth to an attacker, priced against the pool
+ * as it stands right now. Read-only, instant, no gas — see extraction.ts.
+ */
+mev.get("/mev/extraction", async (c) => {
+  if (!env.mev.pool) return bad(c, "MEV lab not deployed", 400);
+  const amountIn = c.req.query("amountIn") ?? "10";
+  const size = Number(amountIn);
+  if (!Number.isFinite(size) || size <= 0) {
+    return bad(c, "amountIn must be a positive number of tokens");
+  }
+  try {
+    return c.json(await extractionCurve(amountIn));
+  } catch (e) {
+    return bad(c, `could not price the curve: ${String(e).slice(0, 180)}`, 502);
+  }
+});
 
 /** The headline number. Computed only from persisted duels. */
 mev.get("/mev/leaderboard", (c) => c.json(leaderboard()));

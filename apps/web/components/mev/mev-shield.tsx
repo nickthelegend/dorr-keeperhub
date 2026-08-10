@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { PanelHeader } from "@/components/mev/panel-header";
-import { useJob, useMevDuels, useMevLeaderboard, useMevStatus } from "@/hooks/use-operator";
+import { useJob, useMevChains, useMevDuels, useMevLeaderboard, useMevStatus } from "@/hooks/use-operator";
 import { mevApi } from "@/lib/operator";
 import { cn } from "@/lib/core";
 import { toast } from "sonner";
@@ -15,6 +15,7 @@ import { Loader2, Play, ShieldCheck, Swords, ExternalLink } from "lucide-react";
 import { LaneCard } from "./lane-card";
 import { MempoolFeed } from "./mempool-feed";
 import { AgentPanel } from "./agent-panel";
+import { ExtractionCurve } from "./extraction-curve";
 
 const usd = (n: number) => `$${n.toFixed(2)}`;
 
@@ -60,6 +61,7 @@ export function MevShield() {
   const { data: status, isError: statusError } = useMevStatus();
   const { data: board } = useMevLeaderboard();
   const { data: duels } = useMevDuels(25);
+  const { data: chains } = useMevChains();
   const qc = useQueryClient();
 
   const [amountIn, setAmountIn] = useState("10");
@@ -139,7 +141,7 @@ export function MevShield() {
   }, [finished, qc]);
 
   return (
-    <div className="mx-auto w-full max-w-6xl space-y-4 p-4 md:p-6">
+    <div className="mx-auto w-full min-w-0 max-w-6xl space-y-4 overflow-x-hidden p-4 md:p-6">
       {/* ─── the claim ─────────────────────────────────────────────────── */}
       <div className="space-y-1">
         <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
@@ -310,6 +312,8 @@ export function MevShield() {
         </CardContent>
       </Card>
 
+      <ExtractionCurve amountIn={amountIn} slippageBps={slippageBps} />
+
       {/* ─── the A/B ───────────────────────────────────────────────────── */}
       <div className="grid gap-3 md:grid-cols-2">
         <LaneCard which="public" lane={latest?.public} pending={running} />
@@ -336,7 +340,7 @@ export function MevShield() {
       <Card>
         <PanelHeader title="Every duel, persisted" bullet="default" />
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
+          <div className="min-w-0 overflow-x-auto">
             <table className="w-full text-xs">
               <thead>
                 <tr className="border-b border-border text-[10px] uppercase tracking-wider text-muted-foreground">
@@ -447,6 +451,14 @@ export function MevShield() {
                 )}
               </div>
             ))}
+            {chains?.privateCapable?.length ? (
+              <p className="col-span-full mt-2 text-muted-foreground">
+                KeeperHub offers private routing on {chains.privateCapable.length} of{" "}
+                {chains.chains.length} supported chains — {chains.privateCapable.join(", ")}. Sepolia
+                being one of them is why this runs where it does: the feature under test genuinely
+                exists here, rather than being approximated on a testnet that lacks it.
+              </p>
+            ) : null}
             <p className="col-span-full mt-2 text-muted-foreground">{status.note}</p>
           </CardContent>
         </Card>

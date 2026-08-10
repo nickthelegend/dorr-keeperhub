@@ -97,6 +97,26 @@ The savings rule is deliberately conservative: **a saving is only claimed when b
 
 ### Your slippage tolerance is the attacker's budget
 
+The app prices this live. For each tolerance it asks the deployed pool
+`maxExtractableFrontRun` — the largest front-run that still lets you clear your
+own limit, i.e. the trade a rational searcher actually makes — against current
+reserves. On a 10 mETH trade:
+
+| Tolerance | Costs you | Attacker needs | Attacker takes |
+|---|---|---|---|
+| 0.10% | $10.96 | 0.68 mETH | $6.60 |
+| 0.50% | $54.78 | 3.40 mETH | $32.96 |
+| **1.00%** *(the usual default)* | **$109.55** | **6.82 mETH** | **$65.85** |
+| 3.00% | $328.66 | 20.77 mETH | $196.84 |
+| 10.00% | $1,095.54 | 73.21 mETH | $647.45 |
+
+No projection and no gas: every "attacker needs" figure is the contract's own
+answer about the real pool. And it agrees with the duels — the curve priced an
+8 mETH trade at 100bps as a $87.77 maximum, and the duel that followed measured
+$89.88, the gap being the pool drifting between the read and the trade.
+
+
+
 The pool exposes `maxExtractableFrontRun(...)`, which solves for the largest front-run that still leaves the victim one wei above their own limit — the trade a rational searcher actually makes. The searcher uses it. That is why a slippage tolerance is not protection: it is a **disclosed budget**. Raise it in the UI and watch the loss grow.
 
 Foundry pins the economics independently of any network:

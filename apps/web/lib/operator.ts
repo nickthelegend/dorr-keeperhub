@@ -177,7 +177,29 @@ const get = <T>(path: string) => req<T>(path);
 const post = <T>(path: string, body?: unknown) =>
   req<T>(path, { method: "POST", body: JSON.stringify(body ?? {}) });
 
+export interface ExtractionPoint {
+  slippageBps: number;
+  quotedOut: string;
+  minOut: string;
+  maxLossUsd: number;
+  attackerCapitalBase: string;
+  attackerProfitUsd: number;
+  toLiquidityProvidersUsd: number;
+}
+
+export interface ExtractionCurveData {
+  pool: string;
+  amountIn: string;
+  midPriceUsd: number;
+  reserveBase: string;
+  reserveQuote: string;
+  points: ExtractionPoint[];
+  note: string;
+}
+
 export const mevApi = {
+  extraction: (amountIn: string) =>
+    get<ExtractionCurveData>(`/mev/extraction?amountIn=${encodeURIComponent(amountIn)}`),
   status: () => get<MevStatus>("/mev/status"),
   leaderboard: () => get<MevLeaderboard>("/mev/leaderboard"),
   duels: async (limit = 25) => (await get<{ duels: MevDuel[] }>(`/mev/duels?limit=${limit}`)).duels,

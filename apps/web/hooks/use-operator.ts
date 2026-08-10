@@ -62,3 +62,13 @@ export function useInvalidateMev() {
     qc.invalidateQueries({ queryKey: ["mev", "agent"] });
   };
 }
+
+/** Which chains KeeperHub can route privately — the constraint the pitch rests on. */
+export function useMevChains() {
+  return useQuery({
+    queryKey: ["mev", "chains"],
+    queryFn: mevApi.chains,
+    staleTime: 10 * 60_000,
+    retry: false,
+  });
+}
