@@ -38,7 +38,9 @@ import { env } from "../env.js";
 import { POOL_ABI, TOKEN_ABI } from "./artifacts.js";
 import * as kh from "./keeperhub.js";
 import { executePrivately } from "./private-lane.js";
-import { Searcher, type SandwichAttempt } from "./searcher.js";
+import { announce, observer } from "./observer.js";
+import type { SandwichAttempt } from "./searcher.js";
+import type { Searcher } from "./searcher.js";
 import { recordDuel, type Duel, type LaneResult } from "./store.js";
 
 export interface DuelParams {
@@ -319,13 +321,14 @@ export async function runDuel(p: DuelParams = {}): Promise<RunDuelResult> {
   if (prep.minted) notes.push("trading wallet topped up from the token faucet (gas sponsored)");
   if (prep.approved) notes.push("pool approved by the trading wallet (gas sponsored)");
 
-  const searcher = new Searcher(pool);
-  searcher.start();
+  // The process-wide observer is already connected and warm. Starting a fresh
+  // subscription here would open with a coverage gap, and a gap looks exactly
+  // like "the transaction was private".
+  const searcher = observer();
   try {
     await searcher.waitUntilConnected();
   } catch (e) {
     // Without the observer there is no measurement, only an assertion.
-    searcher.stop();
     throw new Error(
       `cannot run a duel without a live mempool feed (${e instanceof Error ? e.message : e})`,
     );
@@ -334,6 +337,7 @@ export async function runDuel(p: DuelParams = {}): Promise<RunDuelResult> {
   let publicLane: LaneResult | undefined;
   let privateLane: LaneResult | undefined;
   try {
+    announce("public lane submitting — watch for its hash in the feed");
     publicLane = await runLane({
       lane: "public",
       amountIn,
@@ -346,6 +350,7 @@ export async function runDuel(p: DuelParams = {}): Promise<RunDuelResult> {
       notes.push("no searcher key configured — measured mempool exposure only, no live sandwich");
     }
 
+    announce("private lane submitting — this one should never appear in the feed");
     privateLane = await runLane({
       lane: "private",
       amountIn,
@@ -355,7 +360,8 @@ export async function runDuel(p: DuelParams = {}): Promise<RunDuelResult> {
       attack: false,
     });
   } finally {
-    searcher.stop();
+    // The observer is shared and long-lived; only the attack arming is per-duel.
+    searcher.disarm();
   }
 
   // A lane that errored has no shortfall to compare — treating its missing

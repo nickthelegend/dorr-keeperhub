@@ -5,37 +5,12 @@ import { fileURLToPath } from "node:url";
 const _here = dirname(fileURLToPath(import.meta.url));
 /** Monorepo root (dorr/). */
 export const DORR_ROOT = resolve(_here, "../../..");
-/** Vendored ZKPerps repo (npm-managed; Midnight CLI + Compact artifacts live here). */
-export const ZKPERPS_ROOT = resolve(DORR_ROOT, "vendor/zkperps");
-
 dotenv({ path: resolve(DORR_ROOT, ".env") });
-
-// The engine's lucid_wallet/cardano_env read WALLET_MNEMONIC / CARDANO_* names.
-// Map dorr's canonical names onto them so both stacks agree.
-if (process.env.CARDANO_DEPLOYER_MNEMONIC && !process.env.WALLET_MNEMONIC) {
-  process.env.WALLET_MNEMONIC = process.env.CARDANO_DEPLOYER_MNEMONIC;
-}
-if (process.env.MIDNIGHT_MNEMONIC && !process.env.BIP39_MNEMONIC) {
-  process.env.BIP39_MNEMONIC = process.env.MIDNIGHT_MNEMONIC;
-}
 
 export const env = {
   port: Number(process.env.OPERATOR_PORT || 8790),
-  /** When true, commit/execute/close/withdraw require a valid CIP-30 wallet signature. */
+  /** When true, commit/execute/close require a valid EIP-191 wallet signature. */
   authRequired: process.env.DORR_AUTH === "1" || process.env.DORR_AUTH === "required",
-  cardano: {
-    network: (process.env.CARDANO_NETWORK || "Preprod") as "Preprod" | "Preview" | "Mainnet",
-    mnemonic: process.env.CARDANO_DEPLOYER_MNEMONIC || "",
-    blockfrostProjectId: process.env.BLOCKFROST_PROJECT_ID || "",
-    koiosUrl: process.env.KOIOS_URL || "https://preprod.koios.rest/api/v1",
-  },
-  midnight: {
-    network: process.env.MIDNIGHT_DEPLOY_NETWORK || "undeployed",
-    mnemonic: process.env.MIDNIGHT_MNEMONIC || "",
-    indexerPort: process.env.INDEXER_PORT || "8088",
-    nodePort: process.env.NODE_PORT || "9944",
-    proofServerPort: process.env.PROOF_SERVER_PORT || "6300",
-  },
   eth: {
     network: process.env.ETH_NETWORK || "sepolia",
     chainId: Number(process.env.ETH_CHAIN_ID || 11155111),
@@ -55,6 +30,8 @@ export const env = {
     webhookKey: process.env.KEEPERHUB_WEBHOOK_KEY || "",
     /** Workflow whose write node carries usePrivateMempool. */
     privateWorkflowId: process.env.KEEPERHUB_PRIVATE_WORKFLOW_ID || "",
+    /** Schedule-triggered workflow that runs duels unattended. */
+    scheduledWorkflowId: process.env.KEEPERHUB_SCHEDULED_WORKFLOW_ID || "",
   },
   /** MEV Shield lab — the sandwichable venue and the adversary that hunts it. */
   mev: {
@@ -64,6 +41,8 @@ export const env = {
     /** Searcher EOA. Its own funds, its own gas — it is the adversary, not us. */
     searcherKey: process.env.MEV_SEARCHER_KEY || "",
     searcherAddress: process.env.MEV_SEARCHER_ADDRESS || "",
+    /** Publicly reachable operator base URL, so KeeperHub's scheduler can call in. */
+    publicUrl: process.env.MEV_PUBLIC_URL || "",
     /** Priority fee multiplier the searcher bids to win the front-run slot. */
     searcherPriorityMultiple: Number(process.env.MEV_SEARCHER_PRIORITY_MULTIPLE || 25),
   },

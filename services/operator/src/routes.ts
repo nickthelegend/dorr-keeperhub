@@ -8,7 +8,7 @@ import { getPrice, isFeedDisabled } from "./ftso.js";
 import * as vamm from "./vamm.js";
 import { account, getState, persist, logEvent } from "./state.js";
 import { getJob } from "./jobs.js";
-import { commitOrder, executeOrder, closePosition, cancelOrder, anchorOrderCommitment, addSealedOrder, settleSealedBatch, unrealizedPnl, adjustMargin, setStops, liqPriceOf } from "./trading.js";
+import { commitOrder, executeOrder, closePosition, cancelOrder, addSealedOrder, settleSealedBatch, unrealizedPnl, adjustMargin, setStops, liqPriceOf } from "./trading.js";
 import { runAbDemo, runAttackLab } from "./demo.js";
 import { runBatchAuctionDemo, clearBatchUniform, batchDigest } from "./batch.js";
 import { runSealedDemo, currentRound, secondsUntilRound, roundForTime } from "./sealbid.js";
@@ -19,17 +19,6 @@ import {
 import { enclaveConfigured, enclaveAddress } from "./attestation.js";
 import { resolveFtsoAddress } from "./ftso.js";
 import { buildDisclosure, verifyDisclosure } from "./disclosure.js";
-import {
-  cardanoReady,
-  faucetMint,
-  initCardano,
-  operatorBalances,
-  pkhOf,
-  scanVaultDeposits,
-  vaultDatumFor,
-  vaultReserves,
-  vaultWithdraw,
-} from "./cardano.js";
 import { createJob, jobStep, completeJob, failJob } from "./jobs.js";
 import { verifyAuth, type AuthEnvelope } from "./auth.js";
 import { mev } from "./mev/routes.js";
@@ -78,7 +67,6 @@ app.get("/health", async (c) => {
     ok: true,
     service: "dorr-operator",
     markets: MARKETS.length,
-    cardanoReady: cardanoReady(),
     now: new Date().toISOString(),
   });
 });
@@ -130,24 +118,6 @@ app.get("/vault/info", async (c) => {
   return bad(c, "vault not configured", 503);
 });
 
-app.post("/faucet", async (c) => {
-  const body = await c.req.json().catch(() => ({}));
-  const address = String(body.address || "");
-  const amount = Math.min(Number(body.amount || 10_000), 100_000);
-  if (!address.startsWith("addr_test1")) return bad(c, "address must be a preprod bech32 address");
-  const job = createJob("faucet", address);
-  const step = jobStep(job, `mint ${amount} FXRP → ${address.slice(0, 24)}…`);
-  try {
-    const txHash = await faucetMint(address, amount);
-    step.done({ txHash });
-    completeJob(job);
-    return c.json({ success: true, txHash, amount, jobId: job.id });
-  } catch (e) {
-    step.fail(String(e).slice(0, 300));
-    failJob(job, String(e).slice(0, 300));
-    return bad(c, `faucet failed: ${String(e).slice(0, 300)}`, 500);
-  }
-});
 
 app.get("/account/:address", (c) => {
   const address = c.req.param("address");
@@ -163,53 +133,7 @@ app.get("/account/:address", (c) => {
   });
 });
 
-/** Credit any new vault deposits attributable to this address (poll-friendly). */
-app.post("/deposits/sync", async (c) => {
-  const body = await c.req.json().catch(() => ({}));
-  const address = String(body.address || "");
-  if (!address) return bad(c, "address required");
-  const myPkh = pkhOf(address);
-  const deposits = await scanVaultDeposits();
-  const acct = account(address);
-  const credited: Array<{ utxoRef: string; dusd: number }> = [];
-  for (const d of deposits) {
-    if (d.ownerPkh !== myPkh) continue;
-    if (acct.creditedUtxos.includes(d.utxoRef)) continue;
-    acct.creditedUtxos.push(d.utxoRef);
-    acct.balance += d.dusd;
-    credited.push({ utxoRef: d.utxoRef, dusd: d.dusd });
-  }
-  persist();
-  const total = credited.reduce((s, d) => s + d.dusd, 0);
-  if (total > 0) logEvent({ type: "deposit", address, detail: `Deposited ${total.toFixed(2)} FXRP to the margin vault`, chain: "cardano" });
-  return c.json({ credited, balance: acct.balance, free: acct.balance - acct.locked });
-});
 
-app.post("/withdraw", async (c) => {
-  const body = await c.req.json().catch(() => ({}));
-  const address = String(body.address || "");
-  const amount = Number(body.amount || 0);
-  if (!address || !(amount > 0)) return bad(c, "address and positive amount required");
-  const authErr = checkAuth("withdraw", { address, amount }, body, address);
-  if (authErr) return bad(c, authErr, 401);
-  const acct = account(address);
-  if (amount > acct.balance - acct.locked) return bad(c, "insufficient free balance");
-  const job = createJob("withdraw", address);
-  const step = jobStep(job, `vault → ${amount} FXRP → ${address.slice(0, 24)}…`);
-  try {
-    const txHash = await vaultWithdraw(address, amount);
-    acct.balance -= amount;
-    persist();
-    logEvent({ type: "withdraw", address, detail: `Withdrew ${amount.toFixed(2)} FXRP from the vault`, txHash, chain: "cardano" });
-    step.done({ txHash });
-    completeJob(job);
-    return c.json({ success: true, txHash, jobId: job.id, balance: acct.balance });
-  } catch (e) {
-    step.fail(String(e).slice(0, 300));
-    failJob(job, String(e).slice(0, 300));
-    return bad(c, `withdraw failed: ${String(e).slice(0, 300)}`, 500);
-  }
-});
 
 // ─── trading ─────────────────────────────────────────────────────────────────
 app.post("/orders/commit", async (c) => {
@@ -342,25 +266,6 @@ app.post("/orders/:id/cancel", async (c) => {
   }
 });
 
-// anchor an order's commitment on Cardano L1 (public proof-of-existence, contents hidden)
-app.post("/orders/:id/anchor-commit", async (c) => {
-  const id = c.req.param("id");
-  const body = await c.req.json().catch(() => ({}));
-  const owner = getState().orders.find((o) => o.id === id)?.address;
-  const authErr = checkAuth("anchor-commit", { orderId: id }, body, owner);
-  if (authErr) return bad(c, authErr, 401);
-  try {
-    const { txHash, order } = await anchorOrderCommitment(id);
-    return c.json({
-      success: true,
-      txHash,
-      explorerUrl: `https://preprod.cardanoscan.io/transaction/${txHash}`,
-      order,
-    });
-  } catch (e) {
-    return bad(c, String(e instanceof Error ? e.message : e), 500);
-  }
-});
 
 // resting (private) limit orders for an address
 app.get("/orders/resting/:address", (c) => {
@@ -385,27 +290,30 @@ app.get("/feed", (c) => {
 });
 
 // ─── config (addresses + explorer + markets for the UI evidence panel) ───────
-app.get("/config", async (c) => {
-  const cfg: Record<string, unknown> = {
-    network: "preprod",
-    explorerBase: "https://preprod.cardanoscan.io/transaction/",
+app.get("/config", (c) => {
+  // Describes what this deployment actually talks to. It used to return
+  // hardcoded Cardano preprod values (network "preprod", a cardanoscan explorer)
+  // that no longer corresponded to anything running.
+  return c.json({
     markets: MARKETS.map((m) => ({ id: m.id, symbol: m.symbol, base: m.base, maxLeverage: m.maxLeverage })),
-    midnight: { network: "local", proofServer: "http://127.0.0.1:6301" },
-  };
-  try {
-    const ctx = await initCardano();
-    cfg.cardano = {
-      operatorAddress: ctx.operatorAddress,
-      dusdPolicyId: ctx.dusdPolicyId,
-      dusdUnit: ctx.dusdUnit,
-      vaultAddress: ctx.vaultAddress,
-      ownerVaultAddress: ctx.ownerVaultAddress,
-      anchorAddress: ctx.anchorAddress,
-    };
-  } catch {
-    cfg.cardano = null;
-  }
-  return c.json(cfg);
+    trading: {
+      chain: "flare-coston2",
+      chainId: env.flare.chainId,
+      explorerBase: `${env.flare.explorer}/tx/`,
+      collateral: "FXRP",
+      vault: env.flare.vault || null,
+      settlement: env.flare.settlement || null,
+    },
+    mev: {
+      chain: env.eth.network,
+      chainId: env.eth.chainId,
+      explorerBase: `${env.eth.explorer}/tx/`,
+      pool: env.mev.pool || null,
+      baseToken: env.mev.baseToken || null,
+      quoteToken: env.mev.quoteToken || null,
+      relayer: "keeperhub",
+    },
+  });
 });
 
 // ─── demo admin: repeatable, snappy stage runs ───────────────────────────────
@@ -819,30 +727,5 @@ app.get("/ops/solvency", async (c) => {
     }
   }
 
-  try {
-    const ctx = await initCardano();
-    const reserves = await vaultReserves();
-    const reservesUsd = reserves.dusd;
-    const solvent = reservesUsd + 1e-6 >= liabilitiesUsd;
-    const ratio = liabilitiesUsd > 0 ? reservesUsd / liabilitiesUsd : Infinity;
-    const at = new Date().toISOString();
-    const attestation = createHash("sha256")
-      .update(`dorr-solvency:${ctx.vaultAddress}:${reservesUsd.toFixed(6)}:${liabilitiesUsd.toFixed(6)}:${at}`)
-      .digest("hex");
-    return c.json({
-      solvent,
-      reservesUsd,
-      liabilitiesUsd,
-      surplusUsd: reservesUsd - liabilitiesUsd,
-      collateralizationRatio: ratio === Infinity ? null : ratio,
-      vaultAddress: ctx.vaultAddress,
-      dusdUnit: ctx.dusdUnit,
-      vaultUtxos: reserves.utxos,
-      attestation,
-      at,
-      note: "reserves are the live on-chain FXRP at vaultAddress — recompute and verify independently",
-    });
-  } catch (e) {
-    return bad(c, `solvency check failed: ${String(e).slice(0, 200)}`, 500);
-  }
+  return bad(c, "vault not configured — set DORR_VAULT_ADDRESS to report solvency", 503);
 });

@@ -13,6 +13,8 @@ import { cn } from "@/lib/core";
 import { toast } from "sonner";
 import { Loader2, Play, ShieldCheck, Swords, ExternalLink } from "lucide-react";
 import { LaneCard } from "./lane-card";
+import { MempoolFeed } from "./mempool-feed";
+import { AgentPanel } from "./agent-panel";
 
 const usd = (n: number) => `$${n.toFixed(2)}`;
 
@@ -313,6 +315,10 @@ export function MevShield() {
         <LaneCard which="public" lane={latest?.public} pending={running} />
         <LaneCard which="private" lane={latest?.private} pending={running} />
       </div>
+
+      <MempoolFeed />
+
+      <AgentPanel />
 
       {latest?.notes?.length ? (
         <Card>

@@ -1,21 +1,18 @@
 /**
  * Duel history and the savings leaderboard.
  *
- * Separate file from the trading state on purpose: a duel is an experimental
- * record, not ledger state, and it must survive independently of any operator
- * bookkeeping. Same atomic write-then-rename discipline as `state.ts` so a
- * crash mid-write cannot leave a truncated results file behind — a corrupted
- * results file would silently reset the leaderboard, which is the one number
- * this project asks people to trust.
+ * Backed by SQLite (see db.ts). The public surface is unchanged from the JSON
+ * implementation this replaced, so callers didn't have to move.
+ *
+ * The one rule worth stating twice: a saving is only claimed when BOTH lanes
+ * actually executed. An errored lane has no shortfall to compare against, and
+ * treating its absence as "$0 lost" silently credits the private lane with the
+ * public lane's entire loss. That rule lives in `savingFor` and is applied both
+ * when writing a row and when aggregating, so a stored value can never drift
+ * away from the definition.
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { DORR_ROOT } from "../env.js";
-
-// Same directory the operator's trading state uses, so all persisted state
-// lives in one place and one backup captures everything.
-const DATA_DIR = resolve(DORR_ROOT, "services/operator/data");
-const DUELS_PATH = resolve(DATA_DIR, "mev-duels.json");
+import type { Database } from "bun:sqlite";
+import { database, insertDuelRow } from "./db.js";
 
 export interface LaneResult {
   lane: "public" | "private";
@@ -61,83 +58,9 @@ export interface Duel {
   chainId: number;
   public?: LaneResult;
   private?: LaneResult;
-  /** publicShortfallUsd - privateShortfallUsd. What the private lane saved. */
+  /** publicShortfallUsd - privateShortfallUsd, when both lanes completed. */
   savedUsd: number;
   notes?: string[];
-}
-
-interface DuelFile {
-  version: 1;
-  duels: Duel[];
-}
-
-const empty = (): DuelFile => ({ version: 1, duels: [] });
-
-let file: DuelFile = empty();
-let loaded = false;
-
-export function loadDuels(): DuelFile {
-  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
-  if (existsSync(DUELS_PATH)) {
-    try {
-      file = { ...empty(), ...JSON.parse(readFileSync(DUELS_PATH, "utf8")) };
-    } catch {
-      // A damaged history must not take the operator down with it, but it also
-      // must not masquerade as "no duels yet" — keep the bad file for forensics.
-      try {
-        renameSync(DUELS_PATH, `${DUELS_PATH}.corrupt.${Date.now()}`);
-      } catch {
-        /* best effort */
-      }
-      file = empty();
-    }
-  }
-  // `savedUsd` is derived, so it is recomputed on load rather than trusted.
-  // Early runs recorded a saving for duels whose private lane errored, which
-  // credited the private lane with a result it never produced. Recomputing here
-  // keeps historical rows consistent with the current definition instead of
-  // leaving a number in the leaderboard that today's code would never emit.
-  let migrated = false;
-  for (const d of file.duels) {
-    for (const lane of [d.public, d.private]) {
-      if (lane && normaliseStoredHash(lane)) migrated = true;
-    }
-    const corrected = savingFor(d);
-    if (d.savedUsd !== corrected) {
-      d.savedUsd = corrected;
-      migrated = true;
-    }
-  }
-  loaded = true;
-  // Write the corrections back so the file on disk and the served leaderboard
-  // never disagree — anyone reading data/mev-duels.json directly should see the
-  // same numbers the API reports.
-  if (migrated) persist();
-  return file;
-}
-
-/**
- * Repair a lane whose hash was stored as the workflow's `{hash, blockNumber…}`
- * object rather than a plain string.
- *
- * Workflow executions report transactions as objects while the REST executor
- * reports a bare string; an early run recorded the object verbatim, which
- * rendered as an explorer link to `/tx/[object Object]`. The real hash is
- * present inside that object, so this recovers it rather than discarding a
- * genuine, verifiable transaction. Returns true when it changed something.
- */
-function normaliseStoredHash(lane: LaneResult): boolean {
-  const raw = lane.transactionHash as unknown;
-  if (!raw || typeof raw === "string") return false;
-  const hash = (raw as { hash?: unknown }).hash;
-  if (typeof hash !== "string") return false;
-  lane.transactionHash = hash;
-  if (!lane.transactionLink || lane.transactionLink.includes("[object")) {
-    lane.transactionLink = `https://sepolia.etherscan.io/tx/${hash}`;
-  }
-  const block = (raw as { blockNumber?: unknown }).blockNumber;
-  if (lane.blockNumber == null && typeof block === "number") lane.blockNumber = block;
-  return true;
 }
 
 /** A saving is only claimed when both lanes actually completed. */
@@ -146,32 +69,63 @@ export function savingFor(d: Duel): number {
   return Math.max(0, (d.public.shortfallUsd ?? 0) - (d.private.shortfallUsd ?? 0));
 }
 
-function ensure(): DuelFile {
-  if (!loaded) loadDuels();
-  return file;
+interface Row {
+  id: string;
+  at: string;
+  amount_in: string;
+  base_for_quote: number;
+  slippage_bps: number;
+  pool: string;
+  chain_id: number;
+  notes: string;
+  public_lane: string | null;
+  private_lane: string | null;
 }
 
-function persist(): void {
-  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
-  const tmp = `${DUELS_PATH}.tmp`;
-  writeFileSync(tmp, JSON.stringify(file, null, 2));
-  renameSync(tmp, DUELS_PATH);
+function toDuel(r: Row): Duel {
+  const pub = r.public_lane ? (JSON.parse(r.public_lane) as LaneResult) : undefined;
+  const priv = r.private_lane ? (JSON.parse(r.private_lane) as LaneResult) : undefined;
+  const duel: Duel = {
+    id: r.id,
+    at: r.at,
+    amountIn: r.amount_in,
+    baseForQuote: Boolean(r.base_for_quote),
+    slippageBps: r.slippage_bps,
+    pool: r.pool,
+    chainId: r.chain_id,
+    public: pub,
+    private: priv,
+    savedUsd: 0,
+    notes: JSON.parse(r.notes) as string[],
+  };
+  duel.savedUsd = savingFor(duel);
+  return duel;
+}
+
+const SELECT = `SELECT id, at, amount_in, base_for_quote, slippage_bps, pool, chain_id,
+                       notes, public_lane, private_lane FROM duels`;
+
+/** Opens the database (and imports any legacy JSON) — call once at startup. */
+export function loadDuels(): { duels: Duel[] } {
+  return { duels: listDuels(1_000_000) };
 }
 
 export function recordDuel(d: Duel): Duel {
-  const f = ensure();
   d.savedUsd = savingFor(d);
-  f.duels.push(d);
-  persist();
+  insertDuelRow(database(), d);
   return d;
 }
 
 export function listDuels(limit = 50): Duel[] {
-  return ensure().duels.slice(-limit).reverse();
+  const rows = database()
+    .query(`${SELECT} ORDER BY at DESC LIMIT ?`)
+    .all(limit) as unknown as Row[];
+  return rows.map(toDuel);
 }
 
 export function getDuel(id: string): Duel | undefined {
-  return ensure().duels.find((d) => d.id === id);
+  const row = database().query(`${SELECT} WHERE id = ?`).get(id) as unknown as Row | null;
+  return row ? toDuel(row) : undefined;
 }
 
 export interface Leaderboard {
@@ -199,17 +153,69 @@ export interface Leaderboard {
 }
 
 /**
- * The number the pitch rests on. Computed from persisted duels only — nothing
- * here is estimated, extrapolated, or annualised.
+ * The number the pitch rests on. Aggregated in SQL over the stored rows —
+ * nothing here is estimated, extrapolated, or annualised, and there is no
+ * cached total that could disagree with the underlying data.
  */
 export function leaderboard(): Leaderboard {
-  return computeLeaderboard(ensure().duels);
+  const db: Database = database();
+
+  const agg = db
+    .query(
+      `SELECT
+         COUNT(*)                                          AS duels,
+         COALESCE(SUM(sandwich_landed), 0)                 AS landed,
+         COALESCE(SUM(public_seen), 0)                     AS public_seen,
+         COALESCE(SUM(private_seen), 0)                    AS private_seen,
+         COALESCE(SUM(public_loss_usd), 0)                 AS lost,
+         COALESCE(MAX(public_loss_usd), 0)                 AS worst,
+         COALESCE(SUM(
+           CASE WHEN public_lane IS NOT NULL AND public_error = 0
+                 AND private_lane IS NOT NULL AND private_error = 0
+                THEN MAX(public_loss_usd - private_loss_usd, 0)
+                ELSE 0 END), 0)                            AS saved,
+         COALESCE(SUM(CASE WHEN public_lane IS NOT NULL AND public_error = 0
+                           THEN 1 ELSE 0 END), 0)          AS public_trades
+       FROM duels`,
+    )
+    .get() as {
+    duels: number;
+    landed: number;
+    public_seen: number;
+    private_seen: number;
+    lost: number;
+    worst: number;
+    saved: number;
+    public_trades: number;
+  };
+
+  const entries = listDuels(25).map((d) => ({
+    id: d.id,
+    at: d.at,
+    amountIn: d.amountIn,
+    lostUsd: d.public?.shortfallUsd ?? 0,
+    savedUsd: d.savedUsd,
+    sandwichLanded: Boolean(d.public?.sandwich?.landed),
+    publicTx: d.public?.transactionLink,
+    privateTx: d.private?.transactionLink,
+  }));
+
+  return {
+    duels: agg.duels,
+    sandwichesLanded: agg.landed,
+    publicSeenInMempool: agg.public_seen,
+    privateSeenInMempool: agg.private_seen,
+    totalLostUsd: agg.lost,
+    totalSavedUsd: agg.saved,
+    worstSingleLossUsd: agg.worst,
+    avgLossPerPublicTradeUsd: agg.public_trades ? agg.lost / agg.public_trades : 0,
+    entries,
+  };
 }
 
-/** Pure form, so the aggregation can be tested without touching the real file. */
+/** Pure aggregation over a supplied set — used by tests, no I/O. */
 export function computeLeaderboard(duels: Duel[]): Leaderboard {
   const lost = duels.reduce((s, d) => s + (d.public?.shortfallUsd ?? 0), 0);
-  const saved = duels.reduce((s, d) => s + savingFor(d), 0);
   const publicTrades = duels.filter((d) => d.public && !d.public.error);
   return {
     duels: duels.length,
@@ -217,21 +223,18 @@ export function computeLeaderboard(duels: Duel[]): Leaderboard {
     publicSeenInMempool: duels.filter((d) => d.public?.seenInMempool).length,
     privateSeenInMempool: duels.filter((d) => d.private?.seenInMempool).length,
     totalLostUsd: lost,
-    totalSavedUsd: saved,
+    totalSavedUsd: duels.reduce((s, d) => s + savingFor(d), 0),
     worstSingleLossUsd: duels.reduce((m, d) => Math.max(m, d.public?.shortfallUsd ?? 0), 0),
     avgLossPerPublicTradeUsd: publicTrades.length ? lost / publicTrades.length : 0,
-    entries: duels
-      .slice(-25)
-      .reverse()
-      .map((d) => ({
-        id: d.id,
-        at: d.at,
-        amountIn: d.amountIn,
-        lostUsd: d.public?.shortfallUsd ?? 0,
-        savedUsd: d.savedUsd,
-        sandwichLanded: Boolean(d.public?.sandwich?.landed),
-        publicTx: d.public?.transactionLink,
-        privateTx: d.private?.transactionLink,
-      })),
+    entries: duels.slice(0, 25).map((d) => ({
+      id: d.id,
+      at: d.at,
+      amountIn: d.amountIn,
+      lostUsd: d.public?.shortfallUsd ?? 0,
+      savedUsd: savingFor(d),
+      sandwichLanded: Boolean(d.public?.sandwich?.landed),
+      publicTx: d.public?.transactionLink,
+      privateTx: d.private?.transactionLink,
+    })),
   };
 }

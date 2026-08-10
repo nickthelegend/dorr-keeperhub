@@ -498,15 +498,7 @@ export const operator = {
   vaultInfo: (address?: string) =>
     get<VaultInfo>(`/vault/info${address ? `?address=${encodeURIComponent(address)}` : ""}`),
 
-  faucet: (address: string, amount?: number) =>
-    post<FaucetResult>("/faucet", { address, ...(amount ? { amount } : {}) }),
-
   account: (address: string) => get<Account>(`/account/${encodeURIComponent(address)}`),
-
-  syncDeposits: (address: string) => post<DepositSyncResult>("/deposits/sync", { address }),
-
-  withdraw: (address: string, amount: number) =>
-    postSigned<WithdrawResult>("/withdraw", "withdraw", { address, amount }),
 
   commitOrder: (p: {
     address: string;
@@ -543,14 +535,6 @@ export const operator = {
     postSigned<{ success: boolean; order: Order }>(
       `/orders/${encodeURIComponent(orderId)}/cancel`,
       "cancel",
-      { orderId },
-    ),
-
-  /** Anchor an order's commitment on Cardano L1 — public proof-of-existence, contents hidden. */
-  anchorCommit: (orderId: string) =>
-    postSigned<{ success: boolean; txHash: string; explorerUrl: string; order: Order }>(
-      `/orders/${encodeURIComponent(orderId)}/anchor-commit`,
-      "anchor-commit",
       { orderId },
     ),
 
@@ -770,7 +754,28 @@ export interface MevLeaderboard {
   }>;
 }
 
+export interface MevAgentRun {
+  executionId: string;
+  status: string;
+  startedAt?: string;
+  transactionHash?: string;
+  blockNumber?: number;
+  /** null = the observer wasn't connected when this was mined, so we can't say. */
+  seenInMempool: boolean | null;
+  amountOut?: string;
+}
+
+export interface MevAgent {
+  configured: boolean;
+  reason?: string;
+  workflowId?: string;
+  runs: MevAgentRun[];
+  audited?: number;
+  everSeenInMempool?: number;
+}
+
 export const mevApi = {
+  agent: () => get<MevAgent>("/mev/agent"),
   status: () => get<MevStatus>("/mev/status"),
   leaderboard: () => get<MevLeaderboard>("/mev/leaderboard"),
   duels: async (limit = 25) => (await get<{ duels: MevDuel[] }>(`/mev/duels?limit=${limit}`)).duels,

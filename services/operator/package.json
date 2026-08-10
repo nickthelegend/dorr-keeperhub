@@ -5,8 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "bun run --watch src/index.ts",
-    "start": "bun run src/index.ts",
-    "deploy:preprod": "bun run src/scripts/deploy-preprod.ts"
+    "start": "bun run src/index.ts"
   },
   "dependencies": {
     "@cardano-foundation/cardano-verify-datasignature": "^1.0.11",
@@ -25,6 +24,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
+    "bun-types": "^1.3.14",
     "typescript": "^5.9.3"
   }
 }

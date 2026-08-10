@@ -156,6 +156,9 @@ export class Searcher {
   private readonly publicClient: PublicClient;
   private readonly wallet?: WalletClient;
 
+  /** Anyone watching the raw observation stream (the SSE feed, for instance). */
+  private readonly listeners = new Set<(s: Sighting) => void>();
+
   /** Set once the feed is live, so callers can wait for real coverage. */
   private connected = false;
   private connectedResolvers: Array<() => void> = [];
@@ -181,6 +184,17 @@ export class Searcher {
 
   get isConnected(): boolean {
     return this.connected;
+  }
+
+  /**
+   * Subscribe to every sighting as it happens. Returns an unsubscribe function.
+   *
+   * This is the observation stream itself, not a summary of it — the same data
+   * the attacker acts on, which is what makes it worth showing to a sceptic.
+   */
+  onSighting(fn: (s: Sighting) => void): () => void {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
   }
 
   /** Every pending transaction observed, newest last. */
@@ -297,6 +311,14 @@ export class Searcher {
     if (this.order.length > this.maxSightings) {
       const evicted = this.order.shift();
       if (evicted) this.sightings.delete(evicted);
+    }
+
+    for (const fn of this.listeners) {
+      try {
+        fn(sighting);
+      } catch {
+        // A broken subscriber must never take the observer down with it.
+      }
     }
 
     if (swap) this.onPoolSwap(swap, tx, sighting);

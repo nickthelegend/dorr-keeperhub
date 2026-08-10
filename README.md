@@ -53,6 +53,35 @@ run, before we discovered private routing was workflow-only.
 
 ---
 
+## Watch it happen
+
+Two things on `/mev` turn the claim from an assertion into something you can
+watch:
+
+**The live mempool feed.** Sepolia's pending-transaction stream, as the searcher
+sees it, rendered in the page. Run a duel and the public lane's own hash appears
+in that stream *before* it is mined. Run the private lane and the same stream
+carries on without it. From a real run:
+
+```
+20:51:36 ▸ public lane submitting — watch for its hash in the feed
+20:51:37   SPOTTED  0x219ae50281d59589be65…   swap on our pool
+20:52:02 ▸ private lane submitting — this one should never appear in the feed
+           (nothing — 2,778 transactions seen, 1 of them ours)
+```
+
+An absence is only convincing next to a presence. That is what the feed is for.
+
+**The autonomous agent.** A KeeperHub **Schedule** workflow executes a real
+private swap every hour, unattended — no operator involvement, no button. Each
+run is then audited against the operator's own mempool observer: was this hash
+ever publicly visible? Runs mined while the observer was offline are reported as
+`unobserved` and never counted as a privacy win, because not looking is not the
+same as looking and seeing nothing.
+
+That closes the loop on KeeperHub: it *executes* both lanes of a duel, and it
+*operates* the agent that keeps producing evidence.
+
 ## Why the number is trustworthy
 
 The dollar figure alone would be a just-so story: trades underfill for all sorts of reasons that have nothing to do with MEV. So MEV Shield measures **two** things and only claims an attribution when both line up.
@@ -143,6 +172,9 @@ flowchart LR
 | Private lane via workflows | [`services/operator/src/mev/private-lane.ts`](services/operator/src/mev/private-lane.ts) |
 | The duel (experimental design) | [`services/operator/src/mev/duel.ts`](services/operator/src/mev/duel.ts) |
 | Leaderboard + savings rule | [`services/operator/src/mev/store.ts`](services/operator/src/mev/store.ts) |
+| Live mempool feed (SSE) | [`services/operator/src/mev/observer.ts`](services/operator/src/mev/observer.ts) |
+| Autonomous agent + its audit | [`services/operator/src/mev/scheduled-duel.ts`](services/operator/src/mev/scheduled-duel.ts) |
+| Duel database (SQLite) | [`services/operator/src/mev/db.ts`](services/operator/src/mev/db.ts) |
 | UI | [`apps/web/components/mev/`](apps/web/components/mev/) → `/mev` |
 
 **Deployed on Sepolia**
@@ -205,6 +237,7 @@ bun run --cwd apps/web dev
 - **Sample size is small.** The leaderboard reports exactly what happened across the duels that have been run. Nothing is annualised or extrapolated.
 - **A lost race is reported as a lost race.** If the searcher fails to land the sandwich, the public lane shows the loss it actually took — which is sometimes $0.
 - **The searcher can run out of gas.** It bids 25× the victim's priority fee and pays from its own wallet, so a long session drains it — after which it stops landing attacks and the public lane starts reporting $0. That is the most flattering way this lab can be wrong, so `/mev/status` reports the searcher's balance and the UI warns when it can no longer attack. Top it up with `mev-deploy.ts`, which is idempotent.
+- **The outbound-webhook workflow action requires a paid KeeperHub plan** (`402`). That is the action that would let KeeperHub's scheduler call this operator directly to run a full two-lane duel on a cron. The agent therefore performs the private swap itself, which needs no inbound reachability — a better demonstration, but it means the *scheduled* evidence is private-lane-only; the public-lane comparison still has to be run from the app.
 - **Private-lane gas is not sponsored**, so a full accounting for small trades should net gas against MEV saved. The UI does not currently do that subtraction.
 
 ---

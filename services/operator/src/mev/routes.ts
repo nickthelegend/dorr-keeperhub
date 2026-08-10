@@ -15,10 +15,12 @@ import { POOL_ABI } from "./artifacts.js";
 import { runDuel } from "./duel.js";
 import * as kh from "./keeperhub.js";
 import { getDuel, leaderboard, listDuels } from "./store.js";
+import { observerStatus, subscribe, type FeedEvent } from "./observer.js";
+import { agentRuns } from "./scheduled-duel.js";
 
 export const mev = new Hono();
 
-const bad = (c: Context, msg: string, code: 400 | 404 | 409 | 500 = 400) => c.json({ error: msg }, code);
+const bad = (c: Context, msg: string, code: 400 | 404 | 409 | 500 | 502 = 400) => c.json({ error: msg }, code);
 
 const configured = () => Boolean(env.mev.pool && env.keeperhub.apiKey);
 
@@ -189,6 +191,82 @@ mev.get("/mev/duels/:id", (c) => {
   if (!d) return bad(c, "duel not found", 404);
   return c.json(d);
 });
+
+/**
+ * Server-sent stream of the live mempool observation.
+ *
+ * The point of exposing this is falsifiability: the same feed the attacker acts
+ * on, shown to whoever is watching. A private-lane transaction that never
+ * appears here, while hundreds of unrelated ones do, is evidence — an empty
+ * feed would just be a broken socket.
+ */
+mev.get("/mev/stream", (c) => {
+  return c.newResponse(
+    new ReadableStream({
+      start(controller) {
+        const enc = new TextEncoder();
+        const send = (e: FeedEvent | { type: "hello"; [k: string]: unknown }) =>
+          controller.enqueue(enc.encode(`data: ${JSON.stringify(e)}\n\n`));
+
+        send({ type: "hello", ...observerStatus() });
+        const unsubscribe = subscribe(send);
+        // Comment frames keep proxies from closing an idle connection, and tell
+        // the client the socket is alive during a quiet stretch of mempool.
+        const keepAlive = setInterval(() => controller.enqueue(enc.encode(": ping\n\n")), 15_000);
+
+        c.req.raw.signal.addEventListener("abort", () => {
+          clearInterval(keepAlive);
+          unsubscribe();
+          try {
+            controller.close();
+          } catch {
+            /* already closed */
+          }
+        });
+      },
+    }),
+    {
+      headers: {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache, no-transform",
+        connection: "keep-alive",
+      },
+    },
+  );
+});
+
+/**
+ * The autonomous agent's recent runs, each audited by our own observer.
+ *
+ * `seenInMempool: null` means the observer was not connected when that swap was
+ * mined. Reported as unknown rather than folded into the "never public" count —
+ * not looking is not the same as looking and seeing nothing.
+ */
+mev.get("/mev/agent", async (c) => {
+  if (!env.keeperhub.scheduledWorkflowId) {
+    return c.json({
+      configured: false,
+      reason: "KEEPERHUB_SCHEDULED_WORKFLOW_ID not set — run scripts/mev-schedule.ts",
+      runs: [],
+    });
+  }
+  try {
+    const runs = await agentRuns(10);
+    const judged = runs.filter((r) => r.seenInMempool !== null);
+    return c.json({
+      configured: true,
+      workflowId: env.keeperhub.scheduledWorkflowId,
+      runs,
+      audited: judged.length,
+      everSeenInMempool: judged.filter((r) => r.seenInMempool).length,
+    });
+  } catch (e) {
+    return bad(c, `could not read agent runs: ${String(e).slice(0, 180)}`, 502);
+  }
+});
+
+/** Observer health, for the UI to show whether the feed is genuinely live. */
+mev.get("/mev/observer", (c) => c.json(observerStatus()));
 
 /** The headline number. Computed only from persisted duels. */
 mev.get("/mev/leaderboard", (c) => c.json(leaderboard()));

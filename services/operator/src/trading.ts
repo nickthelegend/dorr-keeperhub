@@ -22,9 +22,6 @@ import {
 import { settleSealedEpoch, currentRound, type SealedInput } from "./sealbid.js";
 import { clearBatchUniform } from "./batch.js";
 import { createJob, jobStep, completeJob, failJob } from "./jobs.js";
-import { midnightCommit, midnightMatch, midnightSettle, midnightBindAnchor } from "./midnight.js";
-import { anchorSettlement, anchorCommitment, cardanoReady, mintPositionNft } from "./cardano.js";
-import { fromText } from "@lucid-evolution/lucid";
 import { publicFeedView } from "./privacy.js";
 import {
   computeSizeBase,
@@ -157,7 +154,6 @@ export function commitOrder(p: CommitParams): { order: DorrOrder; jobId: string 
     commitmentHash: commitment,
     status: "committed",
     createdAt: new Date().toISOString(),
-    midnight: {},
   };
 
   acct.locked += p.marginUsd;
@@ -185,26 +181,13 @@ export function commitOrder(p: CommitParams): { order: DorrOrder; jobId: string 
         : `Committed ${p.privacyMode} ${p.side} order — public sees only hash ${commitment.slice(0, 10)}…`,
   });
 
+  // The commitment is computed and persisted synchronously; there is no async
+  // leg left to wait on. The job is still created so callers keep a uniform
+  // handle to poll.
   const job = createJob("commit", order.id);
-  void (async () => {
-    const step = jobStep(job, "midnight: deploy zkperps-order + proveTraderOrderAuthority");
-    try {
-      const run = await midnightCommit(order.commitmentHash, traderSkFor(order));
-      if (run.code !== 0) throw new Error(run.stderr.slice(-400) || "midnight commit failed");
-      order.midnight = {
-        ...order.midnight,
-        contractAddress: run.vars.CONTRACT_ADDRESS,
-        deployTx: run.vars.DEPLOY_TX,
-        authorityProofTx: run.vars.AUTHORITY_TX,
-      };
-      persist();
-      step.done({ detail: `contract ${run.vars.CONTRACT_ADDRESS ?? "?"}`, txHash: run.vars.AUTHORITY_TX });
-      completeJob(job);
-    } catch (e) {
-      step.fail(String(e).slice(0, 400));
-      failJob(job, String(e).slice(0, 400));
-    }
-  })();
+  const step = jobStep(job, "commitment recorded");
+  step.done({ detail: `hash ${order.commitmentHash.slice(0, 16)}…` });
+  completeJob(job);
 
   return { order, jobId: job.id };
 }
@@ -290,53 +273,13 @@ export function executeOrder(orderId: string): { position: DorrPosition; jobId: 
     detail: `${order.orderType === "limit" ? "Limit order filled" : "Opened"} ${order.side} ${order.sizeBase.toFixed(2)} @ ${fill.avgPrice.toFixed(6)} · ${order.leverage}x`,
   });
 
+  // The fill is applied to the vAMM synchronously above. The ZK matching proof
+  // and CIP-68 position NFT that used to run here needed Midnight and Cardano,
+  // neither of which this deployment targets.
   const job = createJob("execute", position.id);
-  void (async () => {
-    const step = jobStep(job, "midnight: deploy zkperps-matching + proveAndFinalizeMatch");
-    try {
-      const fillRecordHex = sha256(
-        JSON.stringify({
-          t: "dorr-fill",
-          orderId: order.id,
-          positionId: position.id,
-          avgPrice: fill.avgPrice,
-          sizeBase: order.sizeBase,
-        }),
-      );
-      const matchDigest = sha256(Buffer.from(order.commitmentHash + fillRecordHex, "hex"));
-      const run = await midnightMatch(order.commitmentHash, fillRecordHex, matchDigest);
-      if (run.code !== 0) throw new Error(run.stderr.slice(-400) || "midnight match failed");
-      order.midnight = { ...order.midnight, matchProofTx: run.vars.MATCH_TX };
-      persist();
-      step.done({ txHash: run.vars.MATCH_TX });
-    } catch (e) {
-      step.fail(String(e).slice(0, 400));
-      failJob(job, String(e).slice(0, 400));
-      return;
-    }
-
-    // Optional CIP-68 position NFT — non-fatal, skipped cleanly when unfunded.
-    if (cardanoReady()) {
-      const s2 = jobStep(job, "cardano: mint CIP-68 position NFT");
-      try {
-        const tokenNameHex = fromText(`dorrpos-${position.id}`).slice(0, 64);
-        const nft = await mintPositionNft(position.address, tokenNameHex, {
-          name: `dorr ${position.marketId} ${position.side}`,
-          market: position.marketId,
-          side: position.side,
-          entryPrice: position.entryPrice.toFixed(6),
-          size: position.sizeBase.toFixed(4),
-          leverage: String(position.leverage),
-        });
-        position.positionNft = { unit: nft.userUnit, txHash: nft.txHash };
-        persist();
-        s2.done({ txHash: nft.txHash });
-      } catch (e) {
-        s2.fail(String(e).slice(0, 300));
-      }
-    }
-    completeJob(job);
-  })();
+  const step = jobStep(job, "position opened");
+  step.done({ detail: `${position.side} ${position.sizeBase.toFixed(2)} @ ${position.entryPrice.toFixed(6)}` });
+  completeJob(job);
 
   return { position, jobId: job.id };
 }
@@ -417,84 +360,14 @@ export function closePosition(
       ` @ ${exitPrice.toFixed(6)} — PnL ${(pos.realizedPnl ?? 0).toFixed(2)} FXRP`,
   });
 
+  // PnL is realised against the account synchronously above. The ZK settlement
+  // transition and L1 anchor that used to run here targeted Midnight/Cardano.
   const job = createJob("close", pos.id);
-  void (async () => {
-    const settlementId = `dorr-${pos.id}`;
-    const closeRecordHex = sha256(
-      JSON.stringify({
-        t: "dorr-close",
-        positionId: pos.id,
-        exitPrice,
-        realizedPnl: pos.realizedPnl,
-        reason,
-      }),
-    );
-    const initialHex = order?.commitmentHash ?? sha256(pos.id);
-
-    const s1 = jobStep(job, "midnight: deploy zkperps-settlement + proveSettlementTransition");
-    let midnightSettleTx: string | undefined;
-    try {
-      const run = await midnightSettle(initialHex, closeRecordHex);
-      if (run.code !== 0) throw new Error(run.stderr.slice(-400) || "midnight settle failed");
-      midnightSettleTx = run.vars.SETTLE_TX;
-      pos.settlement = { ...pos.settlement, settlementId, midnightSettlementTx: midnightSettleTx };
-      persist();
-      s1.done({ txHash: midnightSettleTx });
-    } catch (e) {
-      s1.fail(String(e).slice(0, 400));
-      failJob(job, String(e).slice(0, 400));
-      return;
-    }
-
-    const s2 = jobStep(job, "flare: anchor settlement digest");
-    let anchorTxHash: string | undefined;
-    try {
-      const res = await anchorSettlement(settlementId, initialHex, midnightSettleTx);
-      anchorTxHash = res.txHash;
-      pos.settlement = { ...pos.settlement, cardanoAnchorTx: anchorTxHash };
-      st.anchors.push({
-        settlementId,
-        txHash: anchorTxHash,
-        commitmentHex: initialHex,
-        at: new Date().toISOString(),
-      });
-      persist();
-      logEvent({
-        type: "anchor",
-        address: pos.address,
-        marketId: pos.marketId,
-        detail: `Settlement digest anchored on Flare`,
-        txHash: anchorTxHash,
-        chain: "cardano",
-      });
-      s2.done({ txHash: anchorTxHash });
-    } catch (e) {
-      s2.fail(String(e).slice(0, 400));
-      failJob(job, String(e).slice(0, 400));
-      return;
-    }
-
-    if (order?.midnight?.contractAddress) {
-      const s3 = jobStep(job, "midnight: bindL1SettlementAnchor (Midnight ↔ Cardano)");
-      try {
-        const anchorDigest = sha256(Buffer.from(anchorTxHash!, "hex"));
-        const run = await midnightBindAnchor(
-          order.midnight.contractAddress,
-          traderSkFor(order),
-          anchorDigest,
-        );
-        if (run.code !== 0) throw new Error(run.stderr.slice(-400) || "bind anchor failed");
-        order.midnight = { ...order.midnight, anchorBindTx: run.vars.BIND_TX };
-        persist();
-        s3.done({ txHash: run.vars.BIND_TX });
-      } catch (e) {
-        s3.fail(String(e).slice(0, 400));
-        failJob(job, String(e).slice(0, 400));
-        return;
-      }
-    }
-    completeJob(job);
-  })();
+  const step = jobStep(job, "position closed");
+  step.done({
+    detail: `${reason} @ ${exitPrice.toFixed(6)} · PnL ${(pos.realizedPnl ?? 0).toFixed(2)} FXRP`,
+  });
+  completeJob(job);
 
   return { position: pos, jobId: job.id };
 }
@@ -632,36 +505,6 @@ export function cancelOrder(orderId: string): DorrOrder {
         : `Cancelled committed order — ${order.marginUsd.toFixed(2)} FXRP margin released`,
   });
   return order;
-}
-
-/**
- * Anchor an order's commitment on Cardano L1 — a public, immutable, timestamped
- * proof the order existed, contents still hidden. Idempotent; owner-gated at the
- * route. Async (real preprod tx). A cancelled/failed order can't be anchored.
- */
-export async function anchorOrderCommitment(
-  orderId: string,
-): Promise<{ txHash: string; order: DorrOrder }> {
-  const st = getState();
-  const order = st.orders.find((o) => o.id === orderId);
-  if (!order) throw new Error("order not found");
-  if (order.status === "cancelled" || order.status === "failed") {
-    throw new Error(`cannot anchor a ${order.status} order`);
-  }
-  if (order.commitAnchor) return { txHash: order.commitAnchor.txHash, order }; // idempotent
-  if (!cardanoReady()) throw new Error("cardano not ready — cannot anchor on L1");
-  const { txHash } = await anchorCommitment(order.id, order.commitmentHash);
-  order.commitAnchor = { txHash, at: new Date().toISOString() };
-  persist();
-  logEvent({
-    type: "anchor",
-    address: order.address,
-    marketId: order.marketId,
-    detail: `Order commitment timestamped on Flare — existence provable, contents still hidden`,
-    txHash,
-    chain: "cardano",
-  });
-  return { txHash, order };
 }
 
 // ─── sealed-bid batch auction: the operator-blind execution path ──────────────
@@ -812,26 +655,10 @@ export async function settleSealedBatch(marketId: string): Promise<SealedBatchRe
       positions.push(position.id);
     }
 
-    // Anchor the exact sealed-batch membership on Cardano L1 — a public, immutable
-    // record of which orders were in the epoch, so the operator can't fabricate,
-    // hide, or reorder the set (censorship/integrity evidence). Best-effort +
-    // fire-and-forget so a slow L1 never blocks settlement.
-    const batchId = `sealbatch:${marketId}@${now}`;
-    void anchorSettlement(batchId, settlement.membershipRoot)
-      .then((res) => {
-        const s = getState();
-        s.anchors.push({ settlementId: batchId, txHash: res.txHash, commitmentHex: settlement.membershipRoot, at: new Date().toISOString() });
-        logEvent({
-          type: "anchor",
-          marketId,
-          detail: `Sealed-batch membership anchored on Flare — the epoch's order set is publicly auditable`,
-          txHash: res.txHash,
-          chain: "cardano",
-        });
-      })
-      .catch(() => {
-        /* L1 unavailable — settlement already succeeded; membership root is still recorded off-chain */
-      });
+    // The membership root is recorded with the settlement below. On-chain
+    // anchoring of it was Cardano-only and has been removed; `settleBatchOnChain`
+    // in flare.ts is the real Flare equivalent but needs the enclave attestation
+    // path, so the root is currently auditable off-chain only.
   }
 
   persist();

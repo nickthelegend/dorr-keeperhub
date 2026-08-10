@@ -8,7 +8,6 @@ import { loadState } from "./state.js";
 import { loadDuels } from "./mev/store.js";
 import { reapOrphanedJobs } from "./jobs.js";
 import { applyFundingTick, scanLiquidations, scanLimitOrders, scanStops, settleSealedBatch } from "./trading.js";
-import { initCardano } from "./cardano.js";
 
 /**
  * Refuse to start if an operator is already serving this port.
@@ -48,12 +47,6 @@ async function main() {
   const orphans = reapOrphanedJobs();
   if (orphans) console.log(`[jobs] failed ${orphans} job(s) orphaned by a restart`);
 
-  // Eagerly bring up Cardano so cardanoReady() is true from the start (enables
-  // CIP-68 minting on execute). Non-fatal: an unfunded/misconfigured wallet just
-  // leaves Cardano routes to surface their own errors.
-  await initCardano().catch((e) =>
-    console.warn(`[cardano] init deferred: ${String(e).slice(0, 160)}`),
-  );
 
   await validateFeeds();
   startPricePolling();
