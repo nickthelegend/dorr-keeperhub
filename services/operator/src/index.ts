@@ -7,6 +7,8 @@ import { seedPool, recenter } from "./vamm.js";
 import { loadState } from "./state.js";
 import { loadDuels } from "./mev/store.js";
 import { reapOrphanedJobs } from "./jobs.js";
+import { observer, observerStatus } from "./mev/observer.js";
+import { env as _env } from "./env.js";
 import { applyFundingTick, scanLiquidations, scanLimitOrders, scanStops, settleSealedBatch } from "./trading.js";
 
 /**
@@ -47,6 +49,19 @@ async function main() {
   const orphans = reapOrphanedJobs();
   if (orphans) console.log(`[jobs] failed ${orphans} job(s) orphaned by a restart`);
 
+
+  // Start the mempool observer at boot, not lazily on first request. Its value
+  // is continuous coverage: a gap means the autonomous agent's swaps land while
+  // nothing is watching, and an unwatched swap can only ever be reported as
+  // "unobserved" — never as private. Waiting for a UI visit to start observing
+  // would leave the audit blind exactly when it matters.
+  if (_env.mev.pool) {
+    observer();
+    setTimeout(() => {
+      const o = observerStatus();
+      console.log(`[mev] mempool observer ${o.connected ? "live" : "not connected"} (${o.seen} seen)`);
+    }, 8_000);
+  }
 
   await validateFeeds();
   startPricePolling();
