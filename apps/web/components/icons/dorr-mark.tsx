@@ -1,45 +1,94 @@
-import * as React from "react";
 import type { SVGProps } from "react";
 
 /**
  * The dorr mark.
  *
- * A lowercase `d` whose bowl is half solid and half open: the left side is
- * filled, the right side is only an outline. That is the whole product in one
- * glyph — half of the order is revealed, half of it never is.
+ * A padlock whose shackle is deliberately *asymmetric* — the right leg lands,
+ * the left stops short. That gap is the whole product in one shape: the order is
+ * sealed to everyone, and openable by exactly one person. The body carries a
+ * keyhole that doubles as a commitment slot.
  *
- * Built from geometry rather than a traced font so it stays crisp at 16px in
- * the navbar and at 200px on the landing page, and inherits `currentColor` so
- * it works on the dark chrome and on the primary tile without a second asset.
+ * Built on a 256 grid with 8px rhythm so it stays crisp from 16px to a banner.
+ * `--dorr-brand` lets a surface override the blue without touching the geometry.
  */
-export const DorrMark = ({
+export function DorrMark({
   title,
   ...props
-}: SVGProps<SVGSVGElement> & { title?: string }) => (
-  <svg
-    xmlns="http://www.w3.org/2000/svg"
-    viewBox="0 0 32 32"
-    fill="none"
-    role={title ? "img" : "presentation"}
-    aria-hidden={title ? undefined : true}
-    {...props}
-  >
-    {title ? <title>{title}</title> : null}
+}: SVGProps<SVGSVGElement> & { title?: string }) {
+  return (
+    <svg
+      viewBox="0 0 256 256"
+      xmlns="http://www.w3.org/2000/svg"
+      role={title ? "img" : "presentation"}
+      aria-hidden={title ? undefined : true}
+      className="w-8 h-8"
+      {...props}
+    >
+      {title ? <title>{title}</title> : null}
+      <defs>
+        <linearGradient id="dorr-body" x1="40" y1="112" x2="216" y2="232" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stopColor="var(--dorr-brand, #2C6BFF)" />
+          <stop offset="100%" stopColor="var(--dorr-brand-deep, #0344DC)" />
+        </linearGradient>
+        <linearGradient id="dorr-shackle" x1="128" y1="24" x2="128" y2="120" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stopColor="var(--dorr-brand-light, #7AA6FF)" />
+          <stop offset="100%" stopColor="var(--dorr-brand, #2C6BFF)" />
+        </linearGradient>
+      </defs>
 
-    {/* The bowl, as a ring. Even-odd punches the counter out of the disc. */}
-    <path
-      fill="currentColor"
-      fillRule="evenodd"
-      clipRule="evenodd"
-      d="M13 10a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm0 4.4a4.6 4.6 0 1 1 0 9.2 4.6 4.6 0 0 1 0-9.2Z"
-    />
+      {/* Shackle — the right leg seats into the body, the left stops short. */}
+      <path
+        d="M84 116V78a44 44 0 0 1 88 0v38"
+        fill="none"
+        stroke="url(#dorr-shackle)"
+        strokeWidth="24"
+        strokeLinecap="round"
+        pathLength="100"
+        strokeDasharray="86 100"
+        strokeDashoffset="-7"
+      />
 
-    {/* The revealed half: the left semicircle of the counter, filled in. */}
-    <path fill="currentColor" d="M13 14.4a4.6 4.6 0 0 0 0 9.2v-9.2Z" />
+      {/* Body */}
+      <rect x="40" y="112" width="176" height="120" rx="34" fill="url(#dorr-body)" />
 
-    {/* The ascender. Squared off so the mark reads as built, not handwritten. */}
-    <rect x="22" y="3" width="4.6" height="25" rx="1.4" fill="currentColor" />
-  </svg>
-);
+      {/* Keyhole: a commitment slot — round head, tapered stem. */}
+      <path
+        d="M128 146a15 15 0 0 1 8.4 27.4l5.1 24.1a5 5 0 0 1-4.9 6.1h-17.2a5 5 0 0 1-4.9-6.1l5.1-24.1A15 15 0 0 1 128 146Z"
+        fill="#fff"
+        fillOpacity="0.96"
+      />
+    </svg>
+  );
+}
+
+/**
+ * Mark + wordmark lockup. `dorr` is set lowercase and tight — the product is a
+ * terminal, not a bank.
+ */
+export function DorrLogo({
+  className = "",
+  markClassName = "w-8 h-8",
+  wordClassName = "text-2xl",
+  tagline,
+}: {
+  className?: string;
+  markClassName?: string;
+  wordClassName?: string;
+  tagline?: string;
+}) {
+  return (
+    <div className={`flex items-center gap-3 ${className}`}>
+      <DorrMark className={markClassName} title="dorr" />
+      <div className="flex flex-col leading-none">
+        <span className={`font-semibold lowercase tracking-tight leading-none ${wordClassName}`}>
+          dorr
+        </span>
+        {tagline ? (
+          <span className="mt-1 text-[9px] uppercase tracking-[0.2em] text-white/40">{tagline}</span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
 
 export default DorrMark;

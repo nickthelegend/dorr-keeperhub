@@ -1,601 +1,438 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
+import Image from "next/image";
 import Link from "next/link";
-import { ArrowUpRight, Menu, X } from "lucide-react";
-import { useReducedMotion } from "framer-motion";
-import { useState } from "react";
-import DorrMark from "@/components/icons/dorr-mark";
-import { ProductShot } from "./product-shot";
-import { BoundaryScene } from "./scenes/boundary";
-import { LanesScene } from "./scenes/lanes";
-import { SealingScene } from "./scenes/sealing";
-import { SNAPSHOT_DATE, formatUsd, useReceipts } from "./use-receipts";
+import { motion } from "framer-motion";
+import { ChevronRight, Menu, X } from "lucide-react";
+import { DorrMark } from "@/components/icons/dorr-mark";
+import { LaunchButton, gradientStyle } from "./primitives";
 import {
-  NoiseFilter,
-  PrimaryCta,
-  SecondaryCta,
-  SectionHero,
-  gradientStyle,
-} from "./primitives";
+  BandScene,
+  BlindScene,
+  ClearScene,
+  CrackScene,
+  ProofFigures,
+  ProofLedger,
+  SandwichScene,
+  SealScene,
+  useLandingMotion,
+  type Figure,
+  type ProofRow,
+} from "./scenes";
 
 /**
- * Section anchors.
+ * The dorr landing page.
  *
- * One list drives the nav, the mobile sheet, and the `id` on each section, so a
- * link can never point at an anchor that does not exist.
+ * One header, six anchored sections. The hero is a still frame on purpose —
+ * everything below it is scroll-driven by GSAP, and each section carries a
+ * diagram that performs its own claim rather than repeating one entrance
+ * animation six times. See `scenes.tsx` for the scenes themselves.
+ *
+ * Everything here is marketing surface — it renders with no operator running and
+ * cannot touch `components/trading/*`.
  */
+
 const SECTIONS = [
-  { id: "terminal", label: "The terminal" },
-  { id: "sealed", label: "How it hides" },
-  { id: "receipts", label: "Receipts" },
-  { id: "trust", label: "Trust model" },
+  { id: "terminal", label: "Terminal" },
+  { id: "sealed", label: "How it works" },
+  { id: "attack", label: "Attack Lab" },
+  { id: "proof", label: "Proof" },
+  { id: "access", label: "Access" },
 ] as const;
 
+const STEPS = [
+  {
+    n: "01",
+    title: "You seal it in the browser",
+    body: "Your order is timelock-encrypted to a drand round that has not been published yet. What leaves your machine is ciphertext plus a 32-byte commitment.",
+    Scene: SealScene,
+  },
+  {
+    n: "02",
+    title: "The operator holds bytes it cannot open",
+    body: "Not a policy — the League of Entropy is a live 12-of-22 threshold network, and the beacon for that round does not exist yet. We have the ciphertext and no way in.",
+    Scene: BlindScene,
+  },
+  {
+    n: "03",
+    title: "The epoch clears at one price",
+    body: "When the round lands, every order in the batch settles at a single uniform price. A bot that front-runs and back-runs buys and sells at the same number.",
+    Scene: ClearScene,
+  },
+  {
+    n: "04",
+    title: "The chain checks our arithmetic",
+    body: "DorrVault.applyPnl only accepts KeeperHub's wallet and reverts PnlNotZeroSum unless the batch nets to zero. We can work out what you are owed; we cannot pay it.",
+    Scene: BandScene,
+  },
+];
+
+const PROOF: readonly ProofRow[] = [
+  { k: "DorrVault", v: "0xfF236fb4…", note: "mUSD margin, depositor-only withdrawal" },
+  { k: "KeeperHub settlement", v: "0x7a4FdD12…", note: "the only wallet applyPnl accepts" },
+  { k: "MevPool", v: "0xb261e0df…", note: "the sandwichable venue the duels run against" },
+];
+
+const NUMBERS: readonly Figure[] = [
+  { to: 4, suffix: "", label: "markets on Chainlink" },
+  { to: 20, suffix: "×", label: "max leverage" },
+  { to: 95, suffix: "", label: "tests, all green" },
+  { to: 0, suffix: "", label: "orders the operator can read" },
+];
+
 export function Landing() {
-  return (
-    /*
-      overflow-x-CLIP, not hidden. `hidden` on one axis forces the other axis to
-      compute as `auto`, which turned this wrapper into a scroll container that
-      has nothing to scroll — and because the app sets `overscroll-none`
-      globally, the browser refused to chain the wheel past it to <html>. The
-      page simply did not scroll. `clip` does the same visual job without ever
-      creating a scroll container, so the wheel reaches the document.
-    */
-    <div className="landing-root relative min-h-screen overflow-x-clip bg-[#0c0c0c] text-white">
-      <NoiseFilter />
-      <Backdrop />
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [active, setActive] = useState<string>("terminal");
+  const rootRef = useRef<HTMLDivElement>(null);
 
-      <div className="relative z-10">
-        <Header />
-        <main>
-          <Hero />
-          <Terminal />
-          <Sealed />
-          <Receipts />
-          <Trust />
-          <Close />
-        </main>
-        <Footer />
+  useLandingMotion(rootRef);
+
+  // Light-up the nav item for whichever section owns the viewport.
+  useEffect(() => {
+    const obs = new IntersectionObserver(
+      (entries) => {
+        const hit = entries
+          .filter((e) => e.isIntersecting)
+          .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+        if (hit) setActive(hit.target.id);
+      },
+      { rootMargin: "-45% 0px -45% 0px", threshold: [0.01, 0.25, 0.5] },
+    );
+    for (const s of SECTIONS) {
+      const el = document.getElementById(s.id);
+      if (el) obs.observe(el);
+    }
+    return () => obs.disconnect();
+  }, []);
+
+  return (
+    <div ref={rootRef} className="landing-root relative min-h-screen bg-[#0c0c0c] text-white">
+      {/* ── ambient backdrop ── */}
+      <div className="fixed inset-0 z-0 pointer-events-none">
+        {/* Self-hosted on purpose: this used to stream a 15.8 MB file from an AI
+            generation service's user-content CDN. Those URLs expire, and a
+            submission that has to still work months from now cannot have its
+            hero depend on one. Re-encoded to 587 KB — the backdrop sits under a
+            50% opacity scrim and a gradient, so nothing is lost. */}
+        <video
+          autoPlay
+          loop
+          muted
+          playsInline
+          preload="auto"
+          aria-hidden
+          className="w-full h-full object-cover pointer-events-none opacity-50"
+          src="/assets/hero-loop.mp4"
+        />
+        <div className="absolute inset-0 bg-gradient-to-b from-[#0c0c0c]/70 via-[#0c0c0c]/85 to-[#0c0c0c]" />
       </div>
-    </div>
-  );
-}
 
-/**
- * The ambient layer.
- *
- * Two scrims over the clip, because one is not enough: it is a moving light
- * source, and on its bright frames a single flat overlay leaves body copy
- * unreadable. Legibility must not depend on which frame happens to be playing.
- *
- * A full-bleed loop is also the exact thing `prefers-reduced-motion` exists to
- * stop, so it holds on its first frame for anyone who asked for that. The page
- * is designed to work without it either way — the codec is not guaranteed, and
- * the base colour underneath is the same #0c0c0c.
- */
-function Backdrop() {
-  const reduceMotion = useReducedMotion();
+      <svg className="absolute w-0 h-0" aria-hidden>
+        <filter id="c3-noise">
+          <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" stitchTiles="stitch" />
+          <feColorMatrix type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.35 0" />
+          <feComposite in2="SourceGraphic" operator="in" result="noise" />
+          <feBlend in="SourceGraphic" in2="noise" mode="multiply" />
+        </filter>
+      </svg>
 
-  return (
-    <div className="pointer-events-none fixed inset-0 z-0" aria-hidden="true">
-      <video
-        autoPlay={!reduceMotion}
-        loop={!reduceMotion}
-        muted
-        playsInline
-        preload="auto"
-        className="h-full w-full object-cover opacity-40"
-        src="https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260508_064122_c4750c0e-7476-4b44-94a2-a85a65c63bf2.mp4"
-      />
-      <div className="absolute inset-0 bg-[#0c0c0c]/80" />
-      <div className="absolute inset-0 bg-gradient-to-b from-[#0c0c0c] via-[#0c0c0c]/60 to-[#0c0c0c]" />
-    </div>
-  );
-}
+      {/* ── the one header ── */}
+      <header className="sticky top-0 z-50 border-b border-white/[0.07] bg-[#0c0c0c]/70 backdrop-blur-xl">
+        <div className="max-w-6xl mx-auto px-6 flex items-center justify-between h-16">
+          <a href="#top" className="flex items-center gap-2.5" aria-label="dorr, back to top">
+            <DorrMark className="w-7 h-7" title="dorr" />
+            <span className="text-[15px] font-semibold lowercase tracking-tight">dorr</span>
+          </a>
 
-/**
- * One header.
- *
- * There used to be two — this bar plus a decorative macOS menu strip beneath
- * it — and at a glance they read as a broken duplicate rather than as chrome
- * plus ornament. The "this is a desktop app" job now belongs to the window
- * frame around the product shot, which is the one place it is actually true.
- */
-function Header() {
-  const [open, setOpen] = useState(false);
+          <nav className="hidden md:flex items-center gap-1" aria-label="Sections">
+            {SECTIONS.map((s) => (
+              <a
+                key={s.id}
+                href={`#${s.id}`}
+                aria-current={active === s.id ? "true" : undefined}
+                className={`relative px-3 py-2 text-sm font-medium rounded-full transition-colors ${
+                  active === s.id ? "text-white" : "text-white/55 hover:text-white/90"
+                }`}
+              >
+                {s.label}
+                {active === s.id ? (
+                  <motion.span
+                    layoutId="nav-active"
+                    className="absolute inset-0 -z-10 rounded-full bg-white/[0.08]"
+                    transition={{ type: "spring", stiffness: 380, damping: 32 }}
+                  />
+                ) : null}
+              </a>
+            ))}
+          </nav>
 
-  return (
-    <header className="sticky top-0 z-50 border-b border-white/[0.06] bg-[#0c0c0c]/70 backdrop-blur-xl">
-      <div className="mx-auto flex h-16 max-w-6xl items-center gap-6 px-6">
-        <Link
-          href="/"
-          aria-label="dorr — home"
-          className="flex shrink-0 items-center gap-2.5 transition-opacity hover:opacity-70"
-        >
-          <DorrMark className="size-6 text-white" />
-          <span className="text-[15px] font-semibold tracking-tight">dorr</span>
-        </Link>
-
-        <nav aria-label="Sections" className="ml-2 hidden items-center gap-1 md:flex">
-          {SECTIONS.map((s) => (
-            <a
-              key={s.id}
-              href={`#${s.id}`}
-              className="rounded-md px-3 py-2 text-sm text-white/60 transition-colors hover:bg-white/5 hover:text-white"
-            >
-              {s.label}
-            </a>
-          ))}
-          {/*
-            Link, not a bare anchor: the section links above are in-page
-            fragments, but this one is a route, and an <a> would throw away the
-            client-side transition and reload the whole app. No trailing arrow
-            either — that glyph reads as "leaves the site", and /mev does not.
-          */}
-          <Link
-            href="/mev"
-            className="ml-1 rounded-md px-3 py-2 text-sm text-white/60 transition-colors hover:bg-white/5 hover:text-white"
-          >
-            MEV Shield
-          </Link>
-        </nav>
-
-        <div className="ml-auto flex items-center gap-2">
-          <div className="hidden sm:block">
-            <PrimaryCta label="Open the terminal" />
+          <div className="hidden md:block">
+            <LaunchButton label="Open terminal" />
           </div>
+
           <button
             type="button"
-            onClick={() => setOpen((v) => !v)}
-            aria-expanded={open}
-            aria-controls="mobile-nav"
-            aria-label={open ? "Close menu" : "Open menu"}
-            className="grid size-10 place-items-center rounded-full border border-white/10 bg-white/5 md:hidden"
+            onClick={() => setMenuOpen((v) => !v)}
+            aria-expanded={menuOpen}
+            aria-label={menuOpen ? "Close menu" : "Open menu"}
+            className="md:hidden w-10 h-10 rounded-full border border-white/10 bg-white/5 flex items-center justify-center active:scale-95 transition-transform"
           >
-            {open ? <X className="size-4" /> : <Menu className="size-4" />}
+            {menuOpen ? <X className="w-4 h-4" /> : <Menu className="w-4 h-4" />}
           </button>
         </div>
-      </div>
 
-      {open && (
-        <nav
-          id="mobile-nav"
-          aria-label="Sections"
-          className="border-t border-white/[0.06] bg-[#0c0c0c]/95 px-6 py-3 md:hidden"
-        >
-          {SECTIONS.map((s) => (
-            <a
-              key={s.id}
-              href={`#${s.id}`}
-              onClick={() => setOpen(false)}
-              className="block rounded-md px-2 py-2.5 text-sm text-white/70 hover:bg-white/5 hover:text-white"
-            >
-              {s.label}
-            </a>
-          ))}
-          <Link
-            href="/mev"
-            onClick={() => setOpen(false)}
-            className="block rounded-md px-2 py-2.5 text-sm text-white/70 hover:bg-white/5 hover:text-white"
-          >
-            MEV Shield
-          </Link>
-          <div className="px-2 pb-1 pt-3 sm:hidden">
-            <PrimaryCta label="Open the terminal" full />
-          </div>
-        </nav>
-      )}
-    </header>
-  );
-}
-
-function Hero() {
-  return (
-    <section className="mx-auto max-w-6xl px-6 pb-14 pt-20 text-center md:pb-20 md:pt-32">
-      {/*
-        No entrance on the headline. The one authored moment on this page is the
-        terminal rising into place below it; a fade on every element competes
-        with that and delays the sentence that has to land first.
-      */}
-      <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-white/40">
-        Perpetual futures · Ethereum Sepolia
-      </p>
-
-      <h1 className="mx-auto mt-6 max-w-4xl text-[2.6rem] font-semibold leading-[0.95] tracking-[-0.035em] md:text-[5.25rem]">
-        Your order is
-        <br />
-        <span className="animate-shiny" style={gradientStyle}>
-          nobody&apos;s business
-        </span>
-      </h1>
-
-      <p className="mx-auto mt-7 max-w-xl text-pretty text-[17px] leading-[1.6] text-white/60">
-        Every public order book tells a searcher what you are about to do and
-        exactly what it is worth to beat you there. dorr publishes a 32-byte
-        hash instead — and settles your PnL on chain through KeeperHub, so the
-        venue that hides your order still cannot touch it.
-      </p>
-
-      <div className="mt-10 flex flex-wrap items-center justify-center gap-3">
-        <PrimaryCta label="Open the terminal" />
-        <SecondaryCta label="See what the mempool costs" href="/mev" />
-      </div>
-
-      <p className="mt-5 font-mono text-[11px] text-white/35">
-        live on testnet · no signup · no wallet needed to look
-      </p>
-    </section>
-  );
-}
-
-function Terminal() {
-  return (
-    <section id="terminal" className="mx-auto max-w-6xl scroll-mt-24 px-6 py-10 md:py-16">
-      {/*
-        A heading here, because "The terminal" is a nav destination and landing
-        on a bare screenshot tells a deep-linked reader nothing about where they
-        are. Centred, since the shot below it is centred and symmetrical.
-      */}
-      <SectionHero
-        index="01"
-        eyebrow="The terminal"
-        title="It is already running."
-        lede="Live on Sepolia against Chainlink marks, with real collateral in a real vault. No signup, and no wallet needed to watch."
-        align="center"
-      />
-      <div className="mt-12">
-        <ProductShot />
-      </div>
-    </section>
-  );
-}
-
-function Sealed() {
-  return (
-    <section id="sealed" className="mx-auto max-w-6xl scroll-mt-24 px-6 py-20 md:py-28">
-      <SectionHero
-        index="02"
-        eyebrow="How it hides"
-        title={
-          <>
-            There is nothing
-            <br />
-            to front-run.
-          </>
-        }
-        lede="Matching happens off chain, so an order never sits in a mempool waiting to be read. What gets published is a commitment — the hash of your side, size, price, leverage and a 128-bit nonce."
-      />
-
-      <div className="mt-14">
-        <SealingScene />
-      </div>
-
-      <dl className="mt-12 grid gap-8 border-t border-white/10 pt-10 sm:grid-cols-3">
-        {[
-          ["Stops", "Never published. A stop you can see is a stop you can hunt."],
-          ["Epochs", "Sealed bids clear at one uniform price, so cutting the queue buys nothing."],
-          ["Disclosure", "Open a past order to an auditor of your choosing, and to nobody else."],
-        ].map(([term, def]) => (
-          <div key={term}>
-            <dt className="font-mono text-[11px] uppercase tracking-wider text-white/40">{term}</dt>
-            <dd className="mt-2.5 text-[13px] leading-[1.6] text-white/55">{def}</dd>
-          </div>
-        ))}
-      </dl>
-
-      <p className="mt-10 max-w-xl text-[13px] leading-[1.6] text-white/40">
-        Seal it to a future drand round and not even we can open it early.
-      </p>
-    </section>
-  );
-}
-
-/**
- * The measured results, as a ledger.
- *
- * Deliberately not four stat cards with an accent colour — that shape reads as
- * marketing furniture and invites a skim past the numbers that are the whole
- * point. These are rows: each one a run that happened, with what each lane gave
- * up and a hash to check it against. Including the run our own searcher lost.
- *
- * Every figure here is read out of services/operator/data/mev.sqlite and agrees
- * with what /mev computes from the same table — 22 duels, 15 landed sandwiches,
- * $2,771.87 out of the public lane, nothing out of the private one. An earlier
- * draft of this section quoted a duel count that was off by one and printed the
- * public-lane total twice under two different headings; both are the kind of
- * thing a reader checks first, so they are pinned to the database now.
- */
-function Receipts() {
-  const { duels, lostUsd, landed, rows, live } = useReceipts();
-
-  return (
-    <section
-      id="receipts"
-      className="mx-auto max-w-6xl scroll-mt-24 border-t border-white/10 px-6 py-20 md:py-28"
-    >
-      <SectionHero
-        index="03"
-        eyebrow="Receipts"
-        title={
-          <>
-            We put a price
-            <br />
-            on the mempool.
-          </>
-        }
-        lede={
-          <>
-            The same swap, run twice — once through the public mempool, once
-            through KeeperHub&apos;s private routing — with a real searcher bot
-            hunting it on its own key and its own gas. The gap between the two
-            is the invoice.
-          </>
-        }
-      />
-
-      <div className="mt-14">
-        <LanesScene />
-      </div>
-
-      {/*
-        The totals read across the full measure and the ledger runs full width
-        beneath them. As a two-column split the prose ran out after four lines
-        and left most of a screen of empty column beside a table that had room
-        to spare — the diagram above now carries the visual weight this layout
-        was trying to balance.
-      */}
-      <div className="mt-16 flex flex-wrap items-baseline justify-between gap-x-10 gap-y-4">
-        <p className="max-w-xl text-[15px] leading-[1.65] text-white/60">
-          Across {duels} duels the public lane gave up{" "}
-          <strong className="font-semibold text-white">{formatUsd(lostUsd)}</strong>{" "}
-          — {landed} sandwiches landed on it. The private lane was never
-          sandwiched once.{" "}
-          <span className="text-white/40">
-            {live ? "Read live from the leaderboard." : `Figures as of ${SNAPSHOT_DATE}.`}
-          </span>
-        </p>
-        <Link
-          href="/mev"
-          className="inline-flex shrink-0 items-center gap-1.5 text-sm text-white/75 underline-offset-4 transition-colors hover:text-white hover:underline"
-        >
-          Run one yourself
-          <ArrowUpRight className="size-3.5" />
-        </Link>
-      </div>
-
-      <div className="mt-10">
-        {/*
-          min-w-0 stays even now the table is full width: any flex or grid item
-          defaults to min-width:auto, so the table's own minimum could still
-          push the section wider than a phone, and the page clips rather than
-          scrolls. Letting this box shrink below its content keeps the overflow
-          where it belongs.
-        */}
-        <div className="min-w-0">
-          {/*
-            Three columns on a phone, four from sm up. The point of this table
-            is the second money column sitting at zero next to the first, so it
-            has to survive a 390px screen — a four-column table only fits there
-            by scrolling, and the column that scrolls out of sight is precisely
-            the one carrying the argument. The searcher's result moves into the
-            trade cell at that size instead; exactly one of the two is in the
-            accessibility tree at any width, because the other is display:none.
-          */}
-          <table className="w-full border-collapse text-left">
-            <caption className="sr-only">
-              Recent duels: what the public lane gave up to a sandwich, what the
-              private lane gave up, and whether our searcher landed the attack
-            </caption>
-            <thead>
-              <tr className="border-b border-white/10">
-                <th
-                  scope="col"
-                  className="pb-3 font-mono text-[10px] font-normal uppercase tracking-wider text-white/35"
+        {menuOpen ? (
+          <div className="md:hidden border-t border-white/[0.07] bg-[#0c0c0c]/95 px-6 py-4">
+            <div className="flex flex-col">
+              {SECTIONS.map((s) => (
+                <a
+                  key={s.id}
+                  href={`#${s.id}`}
+                  onClick={() => setMenuOpen(false)}
+                  className="py-3 text-sm text-white/70 hover:text-white border-b border-white/5 last:border-0"
                 >
-                  Trade
-                </th>
-                <th
-                  scope="col"
-                  className="pb-3 text-right font-mono text-[10px] font-normal uppercase tracking-wider text-white/35"
-                >
-                  Public<span className="hidden sm:inline"> lane</span>
-                </th>
-                <th
-                  scope="col"
-                  className="pb-3 text-right font-mono text-[10px] font-normal uppercase tracking-wider text-white/35"
-                >
-                  Private<span className="hidden sm:inline"> lane</span>
-                </th>
-                <th
-                  scope="col"
-                  className="hidden pb-3 text-right font-mono text-[10px] font-normal uppercase tracking-wider text-white/35 sm:table-cell"
-                >
-                  Searcher
-                </th>
-              </tr>
-            </thead>
-            <tbody className="font-mono text-[13px]">
-              {rows.map((r, i) => (
-                <tr key={i} className="border-b border-white/[0.06] last:border-0">
-                  <th scope="row" className="py-3.5 pr-3 text-left font-normal text-white/70">
-                    {r.size}
-                    <span
-                      className={`ml-2 text-[10px] uppercase tracking-wider sm:hidden ${
-                        r.sandwich ? "text-white/45" : "text-white/25"
-                      }`}
-                    >
-                      {r.sandwich ? "landed" : "missed"}
-                    </span>
-                  </th>
-                  <td
-                    className={`py-3.5 text-right tabular-nums ${
-                      r.sandwich ? "text-red-400" : "text-white/35"
-                    }`}
-                  >
-                    {r.pub}
-                  </td>
-                  {/* The column that never moves. That is the entire finding. */}
-                  <td className="py-3.5 pl-3 text-right tabular-nums text-emerald-400/90">
-                    $0.00
-                  </td>
-                  <td className="hidden py-3.5 pl-3 text-right text-[11px] uppercase tracking-wider sm:table-cell">
-                    {r.sandwich ? (
-                      <span className="text-white/60">landed</span>
-                    ) : (
-                      <span className="text-white/30">missed</span>
-                    )}
-                  </td>
-                </tr>
+                  {s.label}
+                </a>
               ))}
-            </tbody>
-          </table>
-          <p className="mt-5 text-[12px] leading-[1.6] text-white/40">
-            The four costliest runs, and one the searcher never got to — it
-            missed {duels - landed} of the {duels}, and those stay in the total.
-            One private-lane transaction did surface in the mempool; nothing was
-            taken off it. Both hashes for every duel are on the{" "}
-            <Link
-              href="/mev"
-              className="text-white/60 underline underline-offset-2 hover:text-white"
-            >
-              live leaderboard
-            </Link>
-            .
-          </p>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-/**
- * The trust boundary.
- *
- * A table, because the content is a mapping — claim, who holds it, what stops
- * us — and a mapping wants columns rather than three reassuring cards.
- */
-function Trust() {
-  const rows: Array<[string, string, string]> = [
-    [
-      "Your collateral",
-      "DorrVault on Sepolia",
-      "Only the depositor can withdraw. The contract has no token-moving admin function.",
-    ],
-    ["Your balance", "The vault", "The operator reads accountOf. It has no way to write it."],
-    [
-      "Your PnL",
-      "KeeperHub's wallet",
-      "applyPnl is onlySettlement, and every batch must sum to zero — checked on chain.",
-    ],
-    [
-      "Your order",
-      "You, until it clears",
-      "Sealed to a future drand round. The operator cannot read it early either.",
-    ],
-  ];
-
-  return (
-    <section
-      id="trust"
-      className="mx-auto max-w-6xl scroll-mt-24 border-t border-white/10 px-6 py-20 md:py-28"
-    >
-      <SectionHero
-        index="04"
-        eyebrow="Trust model"
-        title={
-          <>
-            We can work out what you are owed.
-            <span className="text-white/40"> We cannot pay it.</span>
-          </>
-        }
-        lede="Off-chain matching is what makes the privacy possible, and it means the operator alone knows the book. That is precisely why the contracts give it nothing to act on."
-      />
-
-      <div className="mt-14">
-        <BoundaryScene />
-      </div>
-
-      <dl className="mt-16 border-t border-white/10">
-        {rows.map(([claim, who, guard]) => (
-          <div
-            key={claim}
-            className="grid gap-2 border-b border-white/10 py-6 md:grid-cols-12 md:items-baseline md:gap-8"
-          >
-            <dt className="text-[15px] font-semibold text-white md:col-span-3">{claim}</dt>
-            <dd className="font-mono text-[13px] text-white/60 md:col-span-3">{who}</dd>
-            <dd className="text-[13px] leading-[1.6] text-white/50 md:col-span-6">{guard}</dd>
+              <div className="pt-4">
+                <LaunchButton label="Open terminal" full />
+              </div>
+            </div>
           </div>
-        ))}
-      </dl>
+        ) : null}
+      </header>
 
-      <p className="mt-8 max-w-xl text-[13px] leading-[1.6] text-white/40">
-        The matching engine itself is trusted — it sees the book, because that is
-        what lets it match. We say so plainly rather than claiming a
-        trustlessness the code does not have.
-      </p>
-    </section>
-  );
-}
-
-function Close() {
-  return (
-    <section className="mx-auto max-w-6xl px-6 pb-24 pt-10 md:pb-32">
-      <div className="liquid-glass relative overflow-hidden rounded-2xl px-8 py-16 text-center md:py-24">
-        <div
-          className="pointer-events-none absolute inset-0 opacity-30"
-          style={{
-            background:
-              "radial-gradient(600px circle at 50% 0%, rgba(255,255,255,0.14), transparent 70%)",
-          }}
-        />
-        <div className="relative">
-          <h2 className="mx-auto max-w-2xl text-pretty text-[2.25rem] font-semibold leading-[1.05] tracking-[-0.03em] md:text-[3.25rem]">
-            Stop announcing your trades.
-          </h2>
-          <p className="mx-auto mt-6 max-w-md text-[15px] leading-[1.6] text-white/60">
-            Open the terminal, place an order, and watch the public feed while
-            you do it. A hash is all it will ever show.
-          </p>
-          <div className="mt-10 flex flex-wrap items-center justify-center gap-3">
-            <PrimaryCta label="Open the terminal" />
-            <SecondaryCta
-              label="Read the architecture"
-              href="https://github.com/nickthelegend/dorr-keeperhub"
-            />
-          </div>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function Footer() {
-  return (
-    <footer className="border-t border-white/10">
-      <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-6 py-8 sm:flex-row">
-        <div className="flex items-center gap-2.5">
-          <DorrMark className="size-4 text-white/50" />
-          <span className="text-[12px] text-white/35">
-            Testnet software. mUSD is a faucet token and is not worth anything.
-          </span>
-        </div>
-        <nav aria-label="Footer" className="flex items-center gap-5 text-[12px] text-white/50">
-          <Link href="/trade" className="hover:text-white">
-            Terminal
-          </Link>
-          <Link href="/mev" className="hover:text-white">
-            MEV Shield
-          </Link>
+      <main id="top" className="relative z-10">
+        {/* ── 1 · hero ── */}
+        <section className="px-6 pt-20 md:pt-32 pb-16 text-center flex flex-col items-center">
           <a
-            href="https://github.com/nickthelegend/dorr-keeperhub"
-            target="_blank"
-            rel="noreferrer"
-            className="hover:text-white"
+            href="#attack"
+            style={{ "--reveal-delay": "0.05s" } as React.CSSProperties}
+            className="reveal group inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] pl-1.5 pr-3 py-1.5 text-xs text-white/70 hover:text-white hover:border-white/20 transition-colors"
           >
-            GitHub
+            <span className="rounded-full bg-[#2C6BFF] text-white px-2 py-0.5 text-[10px] font-semibold">
+              LIVE
+            </span>
+            A bot tried to sandwich this. It got $0.00.
+            <ChevronRight className="w-3.5 h-3.5 transition-transform group-hover:translate-x-0.5" />
           </a>
-        </nav>
-      </div>
-    </footer>
+
+          <h1
+            style={{ "--reveal-delay": "0.14s" } as React.CSSProperties}
+            className="reveal mt-8 text-[2.75rem] leading-[0.92] md:text-7xl md:leading-[0.9] font-semibold tracking-[-0.03em] max-w-4xl text-balance"
+          >
+            <span className="block text-white">Your order.</span>
+            <span className="block animate-shiny" style={gradientStyle}>
+              Unfront-runnable
+            </span>
+          </h1>
+
+          <p
+            style={{ "--reveal-delay": "0.24s" } as React.CSSProperties}
+            className="reveal mt-7 text-white/55 max-w-xl text-[15px] md:text-base leading-relaxed text-pretty"
+          >
+            Perpetual futures on Ethereum Sepolia, where the venue matching your order cannot
+            read it — and KeeperHub, not the venue, is the only thing that can move your money.
+          </p>
+
+          <div
+            style={{ "--reveal-delay": "0.34s" } as React.CSSProperties}
+            className="reveal mt-9 flex flex-col items-center gap-4"
+          >
+            <div className="flex flex-wrap items-center justify-center gap-3">
+              <LaunchButton label="Open the terminal" />
+              <a
+                href="#sealed"
+                className="group inline-flex items-center gap-2 rounded-full border border-white/15 text-white/90 text-sm font-medium px-5 py-3 hover:bg-white/5 hover:border-white/25 transition-colors"
+              >
+                See how it works
+                <ChevronRight className="w-4 h-4 transition-transform group-hover:translate-x-0.5" />
+              </a>
+            </div>
+            <p className="text-xs text-white/35">
+              Live on Ethereum Sepolia · mUSD-margined · up to 20×
+            </p>
+          </div>
+        </section>
+
+        {/* ── 2 · the terminal, for real ── */}
+        <section id="terminal" className="scroll-mt-20 px-6 pb-24 md:pb-32">
+          <figure data-terminal className="max-w-6xl mx-auto will-change-transform">
+            <div className="relative rounded-xl overflow-hidden border border-white/10 shadow-[0_50px_140px_-40px_rgba(3,68,220,0.5)]">
+              <Image
+                src="/shots/terminal.png"
+                alt="The dorr terminal on Ethereum Sepolia: a live ETH/USD candlestick chart priced from Chainlink, the sealed order form with privacy mode on, the public feed showing only commitment hashes, and the activity log."
+                width={3840}
+                height={1972}
+                priority
+                className="w-full h-auto"
+              />
+              <div className="pointer-events-none absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-[#0c0c0c] to-transparent" />
+            </div>
+            <figcaption className="mt-5 text-center text-xs text-white/40">
+              The real terminal, not a render — every price on it came from Chainlink on Sepolia.
+            </figcaption>
+          </figure>
+        </section>
+
+        {/* ── 3 · how it works ── */}
+        <section id="sealed" className="scroll-mt-20 px-6 py-20 md:py-28 border-t border-white/[0.07]">
+          <div className="max-w-6xl mx-auto">
+            <div data-rise className="max-w-2xl">
+              <h2 className="text-3xl md:text-5xl font-semibold tracking-[-0.03em] leading-[1.04] text-balance">
+                Four steps. The third one
+                <br className="hidden sm:block" /> is the one nobody else does.
+              </h2>
+              <p className="mt-5 text-white/55 text-[15px] leading-relaxed max-w-lg text-pretty">
+                Hiding an order from the public is table stakes. Hiding it from the venue that
+                matches it is the hard part — and it only matters if the settlement price can
+                still be audited afterwards. Scroll each step and watch it happen.
+              </p>
+            </div>
+
+            <ol className="mt-14 grid gap-px bg-white/[0.07] md:grid-cols-2 rounded-xl overflow-hidden border border-white/[0.07]">
+              {STEPS.map((s) => (
+                <li
+                  key={s.n}
+                  className="group relative flex flex-col bg-[#0c0c0c] p-7 md:p-9 transition-colors hover:bg-[#101319]"
+                >
+                  <div data-rise className="flex items-baseline gap-4">
+                    <span className="font-mono text-xs text-[#2C6BFF] tabular-nums">{s.n}</span>
+                    <h3 className="text-lg md:text-xl font-semibold tracking-tight">{s.title}</h3>
+                  </div>
+                  <p className="mt-3 ml-0 md:ml-10 text-sm text-white/55 leading-relaxed max-w-md text-pretty">
+                    {s.body}
+                  </p>
+                  <div className="mt-auto pt-7 md:ml-10">
+                    <s.Scene />
+                  </div>
+                </li>
+              ))}
+            </ol>
+          </div>
+        </section>
+
+        {/* ── 4 · attack lab ── */}
+        <section id="attack" className="scroll-mt-20 px-6 py-20 md:py-28 border-t border-white/[0.07]">
+          <div className="max-w-6xl mx-auto grid lg:grid-cols-[1fr_1.15fr] gap-12 lg:gap-16 items-center">
+            <div data-rise>
+              <h2 className="text-3xl md:text-5xl font-semibold tracking-[-0.03em] leading-[1.04] text-balance">
+                Run the attack yourself.
+              </h2>
+              <p className="mt-5 text-white/55 text-[15px] leading-relaxed max-w-md text-pretty">
+                The Attack Lab ships in the product. It runs a real sandwich against the live
+                vAMM — actual fills, actual price impact — then runs the identical attack against
+                a sealed order and shows you the bot failing.
+              </p>
+              <p className="mt-4 text-white/40 text-sm leading-relaxed max-w-md">
+                The brute-force is 25,000 real SHA-256 preimage guesses against the commitment. It
+                is timed on the server and reported with the rate it achieved.
+              </p>
+              <div className="mt-8">
+                <LaunchButton label="Open the Attack Lab" href="/trade" />
+              </div>
+            </div>
+
+            <div data-rise className="grid sm:grid-cols-2 gap-4">
+              <SandwichScene />
+              <CrackScene />
+            </div>
+          </div>
+        </section>
+
+        {/* ── 5 · proof ── */}
+        <section id="proof" className="scroll-mt-20 px-6 py-20 md:py-28 border-t border-white/[0.07]">
+          <div className="max-w-6xl mx-auto">
+            <div data-rise className="max-w-2xl">
+              <h2 className="text-3xl md:text-5xl font-semibold tracking-[-0.03em] leading-[1.04] text-balance">
+                Every claim on this page
+                <br className="hidden sm:block" /> has an address.
+              </h2>
+              <p className="mt-5 text-white/55 text-[15px] leading-relaxed max-w-lg text-pretty">
+                Deployed and verifiable on Ethereum Sepolia. The vault holds mUSD that only its
+                depositor can withdraw — the operator has no token-moving admin function, which is
+                exactly why the solvency figure means something.
+              </p>
+            </div>
+
+            <ProofLedger rows={PROOF} className="mt-12" />
+
+            <ProofFigures items={NUMBERS} className="mt-14" />
+
+            <p data-rise className="mt-14 max-w-2xl text-sm text-white/40 leading-relaxed">
+              <span className="text-white/70">Honest scope:</span> v1 runs a trusted operator for
+              matching and execution, like a sequencer. What is cryptographic today is that it
+              cannot see or front-run a sealed order, the epoch clears at one price, collateral is
+              self-custodied, and the vault refuses any PnL batch that does not net to zero or that
+              is not signed by KeeperHub. The clearing arithmetic is not yet ZK-proven.
+            </p>
+          </div>
+        </section>
+
+        {/* ── 6 · access ── */}
+        <section id="access" className="scroll-mt-20 px-6 py-20 md:py-32 border-t border-white/[0.07]">
+          <div className="max-w-4xl mx-auto relative overflow-hidden rounded-2xl border border-white/10 px-8 py-16 md:py-24 text-center">
+            <div
+              data-glow
+              className="absolute inset-0 pointer-events-none will-change-transform"
+              style={{
+                background:
+                  "radial-gradient(700px circle at 50% -10%, rgba(44,107,255,0.22), transparent 65%)",
+              }}
+            />
+            <div className="relative">
+              <h2 data-rise className="text-3xl md:text-6xl font-semibold tracking-[-0.03em] leading-[1.02] text-balance">
+                Stop paying
+                <br /> the timing tax.
+              </h2>
+              <p data-rise className="mt-6 text-white/55 max-w-md mx-auto text-[15px] leading-relaxed text-pretty">
+                No waitlist and no signup — connect a wallet on Sepolia, claim test mUSD, and the
+                terminal is yours. No wallet needed to look.
+              </p>
+              <div data-rise className="mt-9 flex flex-wrap items-center justify-center gap-3">
+                <LaunchButton label="Open the terminal" />
+                <a
+                  href="https://github.com/nickthelegend/dorr-keeperhub"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="group inline-flex items-center gap-2 rounded-full border border-white/15 text-white text-sm font-medium px-5 py-3 hover:bg-white/5 hover:border-white/25 transition-colors"
+                >
+                  Read the code
+                  <ChevronRight className="w-4 h-4 transition-transform group-hover:translate-x-0.5" />
+                </a>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer className="relative z-10 border-t border-white/[0.07]">
+        <div className="max-w-6xl mx-auto px-6 py-10 flex flex-col sm:flex-row items-center justify-between gap-5 text-xs text-white/35">
+          <div className="flex items-center gap-2.5">
+            <DorrMark className="w-4 h-4" />
+            <span>dorr — perpetual futures you can&apos;t front-run</span>
+          </div>
+          {/* wrap: seven links at gap-5 is wider than a 320px phone, and the
+              page clips rather than scrolls, so the tail would just vanish. */}
+          <div className="flex flex-wrap items-center justify-center gap-x-5 gap-y-2">
+            {SECTIONS.map((s) => (
+              <a key={s.id} href={`#${s.id}`} className="hover:text-white/70 transition-colors">
+                {s.label}
+              </a>
+            ))}
+            {/* /mev is a real route of this build and the flare page it was
+                ported from had no equivalent — without this it is unreachable
+                from the landing page. */}
+            <Link href="/mev" className="hover:text-white/70 transition-colors">
+              MEV Shield
+            </Link>
+            <Link href="/trade" className="text-white/60 hover:text-white transition-colors">
+              Launch app
+            </Link>
+          </div>
+        </div>
+      </footer>
+    </div>
   );
 }
