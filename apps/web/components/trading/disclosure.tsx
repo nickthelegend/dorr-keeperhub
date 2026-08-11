@@ -4,6 +4,8 @@ import { useState } from "react";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
+  DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
 import {
@@ -310,6 +312,17 @@ export function DisclosureDialog({ position }: { position?: Position }) {
         </Button>
       </DialogTrigger>
       <DialogContent className="sm:max-w-lg" showCloseButton>
+        {/*
+          Radix requires a title on every DialogContent, and without one it warns
+          in the console and the dialog announces as untitled to a screen reader.
+          The visible heading here is the tab strip, so the accessible name is
+          provided out-of-band rather than duplicated on screen.
+        */}
+        <DialogTitle className="sr-only">Selective disclosure</DialogTitle>
+        <DialogDescription className="sr-only">
+          Open a past order to an auditor of your choosing, or verify a
+          disclosure against the commitment it claims to open.
+        </DialogDescription>
         <Tabs value={tab} onValueChange={setTab} className="gap-4">
           <TabsList className="w-full">
             <TabsTrigger value="disclose" className="gap-1.5">

@@ -56,7 +56,12 @@ function Stat({
  * touched the public mempool. The leaderboard aggregates only what actually
  * happened on Sepolia — no annualising, no extrapolation from a single sample.
  */
-export function MevShield() {
+/**
+ * @param embedded rendered inside the Attack Lab dialog rather than as the /mev
+ * page — drops the page's own title block and outer gutter, since the dialog
+ * already supplies both. Same duel runner either way; there is only one.
+ */
+export function MevShield({ embedded = false }: { embedded?: boolean } = {}) {
   const { data: status, isError: statusError } = useMevStatus();
   const { data: board } = useMevLeaderboard();
   const { data: duels } = useMevDuels(25);
@@ -175,9 +180,9 @@ export function MevShield() {
   }, [finished, qc]);
 
   return (
-    <div className="mx-auto w-full max-w-6xl space-y-4 p-4 md:p-6">
+    <div className={embedded ? "w-full space-y-4" : "mx-auto w-full max-w-6xl space-y-4 p-4 md:p-6"}>
       {/* ─── the claim ─────────────────────────────────────────────────── */}
-      <div className="space-y-1">
+      <div className={embedded ? "hidden" : "space-y-1"}>
         <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
           <ShieldCheck className="h-5 w-5 text-success" />
           MEV Shield — the private lane, measured

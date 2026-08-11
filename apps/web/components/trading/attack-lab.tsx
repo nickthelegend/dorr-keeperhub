@@ -38,6 +38,7 @@ import {
   FlaskConical,
 } from "lucide-react";
 import Link from "next/link";
+import { MevShield } from "@/components/mev/mev-shield";
 import { cn, formatUsd, readableError, formatSize } from "@/lib/core";
 import { useMarketSelection } from "@/context/market-context";
 import { useMarkets } from "@/hooks/use-operator";
@@ -688,7 +689,9 @@ function ModelBanner() {
 
 export function DemoShowcase() {
   const [open, setOpen] = useState(false);
-  const [tab, setTab] = useState("attack");
+  // Opens on the live duel, not the model. The models explain the mechanism;
+  // the duel is the one that actually spends gas, and it is what the lab is for.
+  const [tab, setTab] = useState("live");
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
@@ -697,18 +700,29 @@ export function DemoShowcase() {
           <span className="hidden lg:inline">Attack Lab</span>
         </Button>
       </DialogTrigger>
-      <DialogContent className="sm:max-w-2xl" showCloseButton>
+      {/*
+        Near-full-bleed. The lab now hosts the live duel — two lanes, a searcher
+        racing them and a leaderboard — and that does not fit in a 2xl column;
+        it was being read through a letterbox.
+      */}
+      <DialogContent
+        className="sm:max-w-[94vw] max-h-[92vh] overflow-y-auto p-4 sm:p-6"
+        showCloseButton
+      >
         <DialogTitle className="sr-only">dorr MEV Attack Lab</DialogTitle>
         <DialogDescription className="sr-only">
-          A model of a sandwich attack against a transparent venue and the same attack against
-          dorr&apos;s sealed orders, solved from live market state — plus the uniform-price batch
-          auction and a side-by-side A/B comparison. Nothing here is sent to a chain.
+          A live duel that sends the same swap twice — once through the public mempool and once
+          privately through KeeperHub — with a real searcher bot racing both on Sepolia. Alongside
+          it, models of the sandwich, the sealed order, the uniform-price batch and an A/B
+          comparison, solved from live market state without sending anything to a chain.
         </DialogDescription>
-        <ModelBanner />
         <Tabs value={tab} onValueChange={setTab} className="gap-4">
           <TabsList className="w-full">
+            <TabsTrigger value="live" className="gap-1.5">
+              <Radio className="size-3.5" /> Live duel
+            </TabsTrigger>
             <TabsTrigger value="attack" className="gap-1.5">
-              <Swords className="size-3.5" /> Attack Lab
+              <Swords className="size-3.5" /> Sandwich model
             </TabsTrigger>
             <TabsTrigger value="sealed" className="gap-1.5">
               <Lock className="size-3.5" /> Sealed
@@ -720,16 +734,27 @@ export function DemoShowcase() {
               <Eye className="size-3.5" /> A/B
             </TabsTrigger>
           </TabsList>
+          {/*
+            The real thing: the same component /mev serves, so there is one duel
+            runner rather than two that can drift apart.
+          */}
+          <TabsContent value="live">
+            <MevShield embedded />
+          </TabsContent>
           <TabsContent value="attack">
+            <ModelBanner />
             <AttackLabBody />
           </TabsContent>
           <TabsContent value="sealed">
+            <ModelBanner />
             <SealedBidBody />
           </TabsContent>
           <TabsContent value="batch">
+            <ModelBanner />
             <BatchAuctionBody />
           </TabsContent>
           <TabsContent value="ab">
+            <ModelBanner />
             <AbShowcaseBody />
           </TabsContent>
         </Tabs>
