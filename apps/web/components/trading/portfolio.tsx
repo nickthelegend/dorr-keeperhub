@@ -217,32 +217,58 @@ function StopsControl({ position, onSaved }: { position: Position; onSaved: () =
   const [tp, setTp] = useState("");
   const [busy, setBusy] = useState(false);
 
-  // Seed inputs from the current (hidden) values whenever the popover opens.
+  /*
+   * The fields open blank even when stops are already set, because the levels
+   * are not sent to the browser — see `hasStopLoss` on DorrPosition. Prefilling
+   * would mean the operator had published the number, which is the exact thing
+   * the feature exists to prevent. The placeholder says a level is already in
+   * place, and submitting replaces it.
+   */
   useEffect(() => {
     if (open) {
-      setSl(position.stopLossPrice != null ? String(position.stopLossPrice) : "");
-      setTp(position.takeProfitPrice != null ? String(position.takeProfitPrice) : "");
+      setSl("");
+      setTp("");
     }
-  }, [open, position.stopLossPrice, position.takeProfitPrice]);
+  }, [open]);
 
-  const hasStops = position.stopLossPrice != null || position.takeProfitPrice != null;
+  const hasStops = position.hasStopLoss === true || position.hasTakeProfit === true;
 
+  /*
+   * Blank means "leave this one alone", not "clear it".
+   *
+   * It used to mean clear, which was safe while the popover opened prefilled
+   * with the current levels. It no longer does — the operator does not send
+   * them back — so a trader adjusting only their stop-loss would have silently
+   * wiped their take-profit. Removal is now its own explicit action.
+   */
   const save = async () => {
-    const slNum = sl.trim() === "" ? null : parseFloat(sl);
-    const tpNum = tp.trim() === "" ? null : parseFloat(tp);
-    if (slNum !== null && !(slNum > 0)) {
-      toast.error("Stop-loss must be a positive price (or blank to clear).");
+    const slNum = sl.trim() === "" ? undefined : parseFloat(sl);
+    const tpNum = tp.trim() === "" ? undefined : parseFloat(tp);
+    if (slNum !== undefined && !(slNum > 0)) {
+      toast.error("Stop-loss must be a positive price.");
       return;
     }
-    if (tpNum !== null && !(tpNum > 0)) {
-      toast.error("Take-profit must be a positive price (or blank to clear).");
+    if (tpNum !== undefined && !(tpNum > 0)) {
+      toast.error("Take-profit must be a positive price.");
       return;
     }
+    if (slNum === undefined && tpNum === undefined) {
+      toast.error("Enter a stop-loss or a take-profit, or use Clear both.");
+      return;
+    }
+    await submit({ stopLoss: slNum, takeProfit: tpNum }, "Stops updated");
+  };
+
+  const clearBoth = () => submit({ stopLoss: null, takeProfit: null }, "Stops cleared");
+
+  const submit = async (
+    stops: { stopLoss?: number | null; takeProfit?: number | null },
+    okMessage: string,
+  ) => {
     setBusy(true);
     try {
-      // Blank input → null (clears). Sending both keeps them explicit.
-      await operator.setStops(position.id, { stopLoss: slNum, takeProfit: tpNum });
-      toast.success("Stops updated", { description: "Trigger prices stay hidden from the public feed." });
+      await operator.setStops(position.id, stops);
+      toast.success(okMessage, { description: "Trigger prices stay hidden from the public feed." });
       setOpen(false);
       onSaved();
     } catch (e: any) {
@@ -273,14 +299,17 @@ function StopsControl({ position, onSaved }: { position: Position; onSaved: () =
             </span>
           </div>
           <p className="text-[10px] text-muted-foreground leading-snug">
-            Trigger prices are never published — no stop-hunting. Leave a field blank to clear it.
+            Trigger prices are never published — not even back to this screen,
+            because anything sent here is readable by anyone who knows your
+            address. Enter a level to set or replace it; leave blank to keep the
+            current one, or use Clear to remove both.
           </p>
         </div>
         <div className="space-y-2">
           <div className="space-y-1">
             <Label className="text-[10px] text-destructive">Stop-loss (mUSD)</Label>
             <Input
-              placeholder="none"
+              placeholder={position.hasStopLoss ? "set — enter to replace" : "none"}
               inputMode="decimal"
               className="font-mono h-8 text-xs"
               value={sl}
@@ -291,7 +320,7 @@ function StopsControl({ position, onSaved }: { position: Position; onSaved: () =
           <div className="space-y-1">
             <Label className="text-[10px] text-success">Take-profit (mUSD)</Label>
             <Input
-              placeholder="none"
+              placeholder={position.hasTakeProfit ? "set — enter to replace" : "none"}
               inputMode="decimal"
               className="font-mono h-8 text-xs"
               value={tp}
@@ -300,9 +329,21 @@ function StopsControl({ position, onSaved }: { position: Position; onSaved: () =
             />
           </div>
         </div>
-        <Button size="sm" className="h-7 w-full text-xs" disabled={busy} onClick={save}>
-          {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : "Save stops"}
-        </Button>
+        <div className="grid grid-cols-[1fr_auto] gap-1.5">
+          <Button size="sm" className="h-7 text-xs" disabled={busy} onClick={save}>
+            {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : "Save stops"}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 text-xs"
+            disabled={busy || !(position.hasStopLoss || position.hasTakeProfit)}
+            onClick={clearBoth}
+            title="Remove both hidden levels"
+          >
+            Clear both
+          </Button>
+        </div>
       </PopoverContent>
     </Popover>
   );
@@ -463,7 +504,7 @@ export default function Portfolio() {
                   <span className="text-right">
                     <span className="inline-flex items-center gap-1 justify-end">
                       {formatUsd(p.marginUsd, 0)}
-                      {(p.stopLossPrice != null || p.takeProfitPrice != null) && (
+                      {(p.hasStopLoss || p.hasTakeProfit) && (
                         <span title="hidden SL/TP set" className="inline-flex">
                           <EyeOff className="w-2.5 h-2.5 text-primary" />
                         </span>
@@ -506,7 +547,7 @@ export default function Portfolio() {
                       <span className="text-[10px] font-mono text-muted-foreground">
                         {p.leverage.toFixed(p.leverage % 1 === 0 ? 0 : 1)}x
                       </span>
-                      {(p.stopLossPrice != null || p.takeProfitPrice != null) && (
+                      {(p.hasStopLoss || p.hasTakeProfit) && (
                         <span title="hidden SL/TP set" className="inline-flex">
                           <EyeOff className="w-3 h-3 text-primary" />
                         </span>

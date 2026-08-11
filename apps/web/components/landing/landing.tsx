@@ -9,6 +9,7 @@ import { ProductShot } from "./product-shot";
 import { BoundaryScene } from "./scenes/boundary";
 import { LanesScene } from "./scenes/lanes";
 import { SealingScene } from "./scenes/sealing";
+import { SNAPSHOT_DATE, formatUsd, useReceipts } from "./use-receipts";
 import {
   NoiseFilter,
   PrimaryCta,
@@ -305,13 +306,7 @@ function Sealed() {
  * thing a reader checks first, so they are pinned to the database now.
  */
 function Receipts() {
-  const rows = [
-    { size: "25.00 mETH", pub: "$972.73", sandwich: true },
-    { size: "12.00 mETH", pub: "$235.01", sandwich: true },
-    { size: "10.00 mETH", pub: "$197.62", sandwich: true },
-    { size: "8.00 mETH", pub: "$119.06", sandwich: true },
-    { size: "10.00 mETH", pub: "$0.00", sandwich: false },
-  ];
+  const { duels, lostUsd, landed, rows, live } = useReceipts();
 
   return (
     <section
@@ -351,10 +346,13 @@ function Receipts() {
       */}
       <div className="mt-16 flex flex-wrap items-baseline justify-between gap-x-10 gap-y-4">
         <p className="max-w-xl text-[15px] leading-[1.65] text-white/60">
-          Across 22 duels the public lane gave up{" "}
-          <strong className="font-semibold text-white">$2,771.87</strong> —
-          fifteen sandwiches landed on it. The private lane was never sandwiched
-          once.
+          Across {duels} duels the public lane gave up{" "}
+          <strong className="font-semibold text-white">{formatUsd(lostUsd)}</strong>{" "}
+          — {landed} sandwiches landed on it. The private lane was never
+          sandwiched once.{" "}
+          <span className="text-white/40">
+            {live ? "Read live from the leaderboard." : `Figures as of ${SNAPSHOT_DATE}.`}
+          </span>
         </p>
         <Link
           href="/mev"
@@ -453,8 +451,8 @@ function Receipts() {
           </table>
           <p className="mt-5 text-[12px] leading-[1.6] text-white/40">
             The four costliest runs, and one the searcher never got to — it
-            missed seven of the twenty-two, and those stay in the total. One
-            private-lane transaction did surface in the mempool; nothing was
+            missed {duels - landed} of the {duels}, and those stay in the total.
+            One private-lane transaction did surface in the mempool; nothing was
             taken off it. Both hashes for every duel are on the{" "}
             <Link
               href="/mev"

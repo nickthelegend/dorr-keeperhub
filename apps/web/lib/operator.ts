@@ -115,10 +115,17 @@ export interface Position {
   orderType?: OrderType;
   /** engine-computed liquidation price (open positions only). */
   liquidationPrice?: number;
-  /** hidden stop-loss trigger price (never published — anti stop-hunting). */
-  stopLossPrice?: number;
-  /** hidden take-profit trigger price. */
-  takeProfitPrice?: number;
+  /**
+   * Whether a hidden stop-loss / take-profit is set — never the level itself.
+   *
+   * The operator deliberately does not send the trigger prices: `/positions/
+   * :address` needs no authentication, so anything it returns is readable by
+   * anyone who knows the address, and a published stop is a stop that can be
+   * hunted. These booleans are enough to badge the position; the levels stay
+   * inside the process that has to act on them.
+   */
+  hasStopLoss?: boolean;
+  hasTakeProfit?: boolean;
 }
 
 /** A private (hidden) resting limit order — visible only to its owner. */

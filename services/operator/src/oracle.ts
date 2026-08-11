@@ -52,8 +52,32 @@ const decimalsCache = new Map<string, number>();
  * Sepolia's Chainlink feeds update far less often than mainnet's, so this is
  * generous — but it is bounded, so a dead feed eventually disables its market
  * instead of quoting yesterday's price forever.
+ *
+ * 36h, not 24h. A Chainlink feed updates on a deviation threshold *or* its
+ * heartbeat, whichever comes first, and DAI/USD on Sepolia has a 24h
+ * heartbeat — a stablecoin almost never moves enough to trigger the deviation
+ * arm, so it genuinely sits unchanged for very nearly the full day. Setting
+ * the staleness bound to exactly that heartbeat meant the age crept past it
+ * every single day in the minutes before the next update, disabling a working
+ * market and emitting null prices until the heartbeat fired. Observed live:
+ * "DAI/USD stale by 24h — market disabled" while the feed's own updatedAt was
+ * 48 seconds old. The bound has to clear the slowest heartbeat with room to
+ * spare, or it is a scheduled outage rather than a safety check.
  */
-const MAX_AGE_SEC = 24 * 60 * 60;
+export const MAX_AGE_SEC = 36 * 60 * 60;
+
+/**
+ * The slowest heartbeat among the configured Sepolia feeds (DAI/USD, 24h).
+ * `MAX_AGE_SEC` must clear this, or a healthy feed disables its own market
+ * once per cycle. Exported so a test can hold the two against each other
+ * rather than trusting a comment.
+ */
+export const SLOWEST_FEED_HEARTBEAT_SEC = 24 * 60 * 60;
+
+/** Is a feed reading too old to quote? Pure, so the rule is testable. */
+export function isStale(publishTimeSec: number, nowSec = Math.floor(Date.now() / 1000)): boolean {
+  return nowSec - publishTimeSec > MAX_AGE_SEC;
+}
 
 const client = () => createPublicClient({ chain: sepolia, transport: http(env.eth.rpcUrl) });
 
@@ -95,7 +119,7 @@ export async function pollOnce(): Promise<void> {
       try {
         const p = await readFeed(m.feedId);
         const age = Math.floor(Date.now() / 1000) - p.publishTime;
-        if (age > MAX_AGE_SEC) {
+        if (isStale(p.publishTime)) {
           if (!disabled.has(norm(m.feedId))) {
             console.warn(`[oracle] ${m.symbol} stale by ${Math.round(age / 3600)}h — market disabled`);
           }

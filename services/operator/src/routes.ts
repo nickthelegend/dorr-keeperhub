@@ -23,6 +23,23 @@ import { collateralInfo, vaultSolvency, traderAccount, relayerBalance, vaultConf
 export const app = new Hono();
 app.use("*", cors({ origin: "*", allowMethods: ["GET", "POST", "OPTIONS"], allowHeaders: ["Content-Type"] }));
 
+/**
+ * Every response out of this service is JSON, including the ones nobody
+ * planned for.
+ *
+ * Hono's default 404 is `text/plain` "404 Not Found", and its default error
+ * page is HTML. Both are a trap for the only client this API has: the web app
+ * calls `res.json()` on the way back, so a typo'd path or an unhandled throw
+ * surfaced as a JSON parse error pointing at the fetch helper rather than at
+ * the request that was actually wrong. Same shape as every deliberate error
+ * below — `{ error }` — so one code path in the client handles all of them.
+ */
+app.notFound((c) => c.json({ error: `no route for ${c.req.method} ${c.req.path}` }, 404));
+app.onError((err, c) => {
+  console.error(`[operator] unhandled on ${c.req.method} ${c.req.path}:`, err);
+  return c.json({ error: firstLine(err) }, 500);
+});
+
 // MEV Shield — public-vs-private lane duels and the savings leaderboard.
 app.route("/", mev);
 
@@ -323,6 +340,20 @@ app.get("/orders/:id", (c) => {
   return c.json(order);
 });
 
+/**
+ * A trader's positions.
+ *
+ * Stop and take-profit **levels never leave this process**. This route is
+ * address-scoped but unauthenticated — knowing an address is enough to call it,
+ * and on a public chain everybody's address is knowable — so spreading the
+ * stored position wholesale published exactly the number the product promises
+ * to keep: "a stop you can see is a stop you can hunt". A searcher could read
+ * where a trader's stop sat and push price into it.
+ *
+ * What a caller gets instead is whether stops exist, which is all the UI needs
+ * to badge a position. The levels themselves are only ever known to the process
+ * that has to trigger them.
+ */
 app.get("/positions/:address", (c) => {
   if (!isEvmAddress(c.req.param("address"))) return bad(c, "not an EVM address", 400);
   const address = c.req.param("address");
@@ -332,8 +363,11 @@ app.get("/positions/:address", (c) => {
       const m = marketById(p.marketId);
       const idx = m ? getPrice(m.feedId) : undefined;
       const mark = idx?.price ?? p.entryPrice;
+      const { stopLossPrice, takeProfitPrice, ...safe } = p;
       return {
-        ...p,
+        ...safe,
+        hasStopLoss: stopLossPrice != null,
+        hasTakeProfit: takeProfitPrice != null,
         markPrice: mark,
         unrealizedPnl: p.status === "open" ? unrealizedPnl(p, mark) - p.fundingPaid : undefined,
         liquidationPrice: p.status === "open" ? liqPriceOf(p) : undefined,
@@ -384,7 +418,12 @@ app.post("/positions/:id/stops", async (c) => {
   const authErr = checkAuth("stops", { positionId: id, ...stops }, body, owner);
   if (authErr) return bad(c, authErr, 401);
   try {
-    return c.json({ success: true, position: setStops(id, stops) });
+    // Same redaction as the read path — the levels stay inside the process.
+    const { stopLossPrice, takeProfitPrice, ...safe } = setStops(id, stops);
+    return c.json({
+      success: true,
+      position: { ...safe, hasStopLoss: stopLossPrice != null, hasTakeProfit: takeProfitPrice != null },
+    });
   } catch (e) {
     return bad(c, String(e instanceof Error ? e.message : e));
   }

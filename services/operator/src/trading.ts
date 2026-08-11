@@ -477,6 +477,46 @@ export function adjustMargin(positionId: string, deltaUsd: number): DorrPosition
 }
 
 /** Set hidden stop-loss / take-profit (null clears). Never public → no stop-hunting. */
+/**
+ * A stop has a side.
+ *
+ * On a long, a stop-loss sits below the entry and a take-profit above it; on a
+ * short it is the other way round. The inverted pair is not a harmless typo — a
+ * "stop-loss" placed above a long's entry is already true the moment it is set,
+ * so the position closes on the next tick and the trader is told they were
+ * stopped out of a trade that never moved.
+ *
+ * Pure, and exported, so the rule can be tested without a position in module
+ * state — a test that installs one has to `persist()` to exercise the real
+ * path, and that writes the operator's live ledger to disk.
+ */
+export function assertStopDirection(
+  side: "LONG" | "SHORT",
+  entryPrice: number,
+  stops: { stopLoss?: number | null; takeProfit?: number | null },
+): void {
+  const long = side === "LONG";
+  const ref = entryPrice;
+  if (stops.stopLoss != null) {
+    if (stops.stopLoss <= 0) throw new Error("stopLoss must be > 0");
+    if (long && stops.stopLoss >= ref) {
+      throw new Error(`stopLoss must be below the entry price (${ref.toFixed(2)}) on a LONG`);
+    }
+    if (!long && stops.stopLoss <= ref) {
+      throw new Error(`stopLoss must be above the entry price (${ref.toFixed(2)}) on a SHORT`);
+    }
+  }
+  if (stops.takeProfit != null) {
+    if (stops.takeProfit <= 0) throw new Error("takeProfit must be > 0");
+    if (long && stops.takeProfit <= ref) {
+      throw new Error(`takeProfit must be above the entry price (${ref.toFixed(2)}) on a LONG`);
+    }
+    if (!long && stops.takeProfit >= ref) {
+      throw new Error(`takeProfit must be below the entry price (${ref.toFixed(2)}) on a SHORT`);
+    }
+  }
+}
+
 export function setStops(
   positionId: string,
   stops: { stopLoss?: number | null; takeProfit?: number | null },
@@ -485,6 +525,9 @@ export function setStops(
   const pos = st.positions.find((x) => x.id === positionId);
   if (!pos) throw new Error("position not found");
   if (pos.status !== "open") throw new Error(`position is ${pos.status}`);
+
+  assertStopDirection(pos.side, pos.entryPrice, stops);
+
   if (stops.stopLoss !== undefined) pos.stopLossPrice = stops.stopLoss ?? undefined;
   if (stops.takeProfit !== undefined) pos.takeProfitPrice = stops.takeProfit ?? undefined;
   persist();
